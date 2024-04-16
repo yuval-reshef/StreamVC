@@ -37,7 +37,7 @@ flowchart LR
  - C (scale parameter) = 64, D (embedding dimensionality) = 64.
  - No [FiLM](https://arxiv.org/pdf/1709.07871.pdf) (Feature-wise Linear Modulation) conditioning.
  - [Implementation](https://github.com/lucidrains/audiolm-pytorch/blob/main/audiolm_pytorch/soundstream.py) of SoundStream in AudioLM repo.
- - Streaming-aware convolution modules which were introduced in [KWS-Streaming](https://arxiv.org/pdf/2005.06720.pdf) and extended in [Streaming-SEANet](https://arxiv.org/pdf/2010.10677.pdf) should be used for inference. They have an official [TensorFlow/Keras implementation](https://github.com/google-research/google-research/tree/master/kws_streaming) but not in pytorch. Maybe [pytorch-tcn](https://github.com/paul-krug/pytorch-tcn/tree/main) but I don't think it's the same thing.
+ - Streaming-aware convolution modules which were introduced in [KWS-Streaming](https://arxiv.org/pdf/2005.06720.pdf) and extended in [Streaming-SEANet](https://arxiv.org/pdf/2010.10677.pdf) should be used for inference. They have an official [TensorFlow/Keras implementation](https://github.com/google-research/google-research/tree/master/kws_streaming) but not in pytorch. [pytorch-tcn](https://github.com/paul-krug/pytorch-tcn/tree/main) has a streaming implementation for a casual convolution.
 - [ ] (2) Speech Encoder
  - Same as (1).
  - C = 32, D = 64.
@@ -50,11 +50,11 @@ flowchart LR
  - [Implementation](https://github.com/lucidrains/audiolm-pytorch/blob/main/audiolm_pytorch/soundstream.py) of SoundStream in AudioLM repo.
  - Streaming as in (1).
 - [ ] (4) f0 estimation
- - Yin algorithm
+ - [Yin algorithm](http://audition.ens.fr/adc/pdf/2002_JASA_YIN.pdf)
  - [Numpy Implementation](https://github.com/patriceguyot/Yin)
  - Also [implemented in librosa](https://librosa.org/doc/main/generated/librosa.yin.html)
- - We can't use a package for this since we need internal parameters of the algorithm (he cumulative mean normalized difference value at the estimated period and the estimated unvoiced (aperiodic) signal predicate).
- - Streaming in inference.
+ - We can't use a package for this since we need internal parameters of the algorithm (the cumulative mean normalized difference value at the estimated period and the estimated unvoiced signal predicate) + we need streaming suppport, so we might as well implement it in pytorch.
+ - Streaming in inference (computed on a 3 frame window).
 - [ ] (5) f0 whitening
  - Normalization of the f0 envelopes based on utterance-level mean & std.
  - During streaming inference, running averages are used.
@@ -69,6 +69,7 @@ flowchart LR
  - [Implementation of Soft-VC](https://github.com/bshall/soft-vc) contains a specific [implementation for this part](https://github.com/bshall/hubert) which we can probably use as is.
  - These are used to train (1) with cross-entropy loss.
 - [ ] (9) Discriminator
+ - Multi-scale STFT discriminator.
  - based on [MelGan](https://arxiv.org/pdf/1910.06711.pdf) and [Streaming-SEANet](https://arxiv.org/pdf/2010.10677.pdf).
  - In the [Official implementation of MelGan](https://github.com/descriptinc/melgan-neurips/blob/master/mel2wav/modules.py).
  - In the [Unofficial implementation of Streaming-SEANet](https://github.com/zeroone-universe/RealTimeBWE/blob/master/MelGAN.py).
