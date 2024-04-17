@@ -5,8 +5,8 @@ An unofficial pytorch implementation of [STREAMVC: REAL-TIME LOW-LATENCY VOICE C
 flowchart LR 
     TS[Training Sample] -.-> SP
     SP -.-> HB[["(8) HubBert based\npseudo labels"]]
-    HB <-.-> LN[[LN+Linear+Softmax]] -.->L1((cross\nentropy\nloss))
-    CE -.->LN
+    CE -.-> LN[[LN+Linear+Softmax]] -.->L1((cross\nentropy\nloss))
+    HB -.->L1
     subgraph Online Inference
         SP[Source\nSpeech] --> CE[["(1) Content\nEncoder"]] -->|"// (grad-stop)"| CL[Content\nLatent] --> CAT(( )) -->D[["(3) Decoder"]]
         SP --> f0[["(4) f0 estimation"]] --> f0y[["(5) f0 whitening"]] --> CAT
@@ -21,13 +21,13 @@ flowchart LR
     TS2[Training Sample] -.->Dis
     Dis -.-> L2((adversarial\nloss))
     Dis -.-> L3((feature\nloss))
-    D -.-> L4((reconstruction\nloss ?))
-    TS2 -.-> L4
-    classDef train fill:#337;
+    D -.-> L4((reconstruction\nloss))
+    TS2 -.-> L4 
+    classDef train fill:#337,color:#ccc;
     class TS,TS2,HB,LN,Dis train;
-    classDef off fill:#733;
+    classDef off fill:#733,color:#ccc;
     class TP,SE,LP,SL off;
-    classDef else fill:#373;
+    classDef else fill:#373,color:#ccc;
     class SP,CE,CL,D,f0,f0y,FE,CAT else;
 ```
 ## TO-Dos
