@@ -4,3 +4,5 @@ datasets
 safetensors
 tensorboard
 einops
+soundfile
+librosa
