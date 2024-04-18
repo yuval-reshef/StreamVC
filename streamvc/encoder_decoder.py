@@ -159,7 +159,7 @@ class CausalConvTranspose1d(nn.ConvTranspose1d):
         out = super().forward(x)
         # we trim the output on the right side
         # see https://github.com/lucidrains/audiolm-pytorch/issues/8
-        return out[..., :self.causal_trim]
+        return out[..., :-self.causal_trim]
 
 
 class FiLM(nn.Module):
