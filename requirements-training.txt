@@ -1,8 +1,6 @@
 torch
 torchaudio
-datasets
+datasets[audio]
 safetensors
 tensorboard
 einops
-soundfile
-librosa

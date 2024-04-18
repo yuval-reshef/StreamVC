@@ -2,18 +2,23 @@ from functools import partial
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops.layers.torch import Rearrange
 
 
 class Encoder(nn.Module):
     def __init__(self, scale: int, embedding_dim: int):
         super().__init__()
         self.encoder = nn.Sequential(
+            Rearrange('... samples -> ... 1 samples'),
             CausalConv1d(in_channels=1, out_channels=scale, kernel_size=7),
+            nn.ELU(),
             EncoderBlock(scale, 2*scale, stride=2),
             EncoderBlock(2*scale, 4*scale, stride=4),
             EncoderBlock(4*scale, 8*scale, stride=5),
             EncoderBlock(8*scale, 16*scale, stride=8),
-            CausalConv1d(16*scale, embedding_dim, kernel_size=3)
+            CausalConv1d(16*scale, embedding_dim, kernel_size=3),
+            nn.ELU(),
+            Rearrange('... embedding frames -> ... frames embedding')
         )
 
     def forward(self, x: torch.Tensor):
@@ -23,10 +28,10 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, scale: int, embedding_dim: int, conditioning_dim: int):
         super().__init__()
-        self.decoder_film = FiLM(embedding_dim, conditioning_dim)
-
         self.decoder = SequentialWithFiLM(
+            Rearrange('... frames embedding -> ... embedding frames'),
             CausalConv1d(embedding_dim, 16*scale, kernel_size=7),
+            nn.ELU(),
             DecoderBlock(16*scale, 8*scale, stride=8),
             FiLM(8*scale, conditioning_dim),
             DecoderBlock(8*scale, 4*scale, stride=5),
@@ -35,7 +40,8 @@ class Decoder(nn.Module):
             FiLM(2*scale, conditioning_dim),
             DecoderBlock(2*scale, scale, stride=2),
             FiLM(scale, conditioning_dim),
-            CausalConv1d(scale, 1, kernel_size=7)
+            CausalConv1d(scale, 1, kernel_size=7),
+            Rearrange('... 1 samples -> ... samples')
         )
 
     def forward(self, x: torch.Tensor, condition: torch.Tensor):
@@ -63,23 +69,24 @@ class SequentialWithFiLM(nn.Sequential):
         return input
 
 
-def EncoderBlock(input_channels: int, channels: int, stride: int) -> nn.Module:
+def EncoderBlock(in_channels: int, out_channels: int, stride: int) -> nn.Module:
     return nn.Sequential(
-        ResidualUnit(input_channels, channels // 2, dilation=1),
-        ResidualUnit(channels // 2, channels // 2, dilation=3),
-        ResidualUnit(channels // 2, channels // 2, dilation=9),
-        CausalConv1d(channels // 2, channels,
-                     kernel_size=2*stride, stride=stride)
+        ResidualUnit(in_channels, dilation=1),
+        ResidualUnit(in_channels, dilation=3),
+        ResidualUnit(in_channels, dilation=9),
+        CausalConv1d(in_channels, out_channels,
+                     kernel_size=2*stride, stride=stride),
+        nn.ELU()
     )
 
 
-def DecoderBlock(input_channels: int, channels: int, stride: int) -> nn.Module:
+def DecoderBlock(in_channels: int, out_channels: int, stride: int) -> nn.Module:
     return nn.Sequential(
-        CausalConvTranspose1d(input_channels, channels,
+        CausalConvTranspose1d(in_channels, out_channels,
                               kernel_size=2*stride, stride=stride),
-        ResidualUnit(channels // 2, channels // 2, dilation=1),
-        ResidualUnit(channels // 2, channels // 2, dilation=3),
-        ResidualUnit(channels // 2, channels // 2, dilation=9),
+        ResidualUnit(out_channels, dilation=1),
+        ResidualUnit(out_channels, dilation=3),
+        ResidualUnit(out_channels, dilation=9),
     )
 
 
@@ -92,14 +99,13 @@ class Residual(nn.Module):
         return self.fn(x, *args, **kwargs) + x
 
 
-def ResidualUnit(in_channels: int, out_channels: int, dilation: int,
-                 kernel_size: int = 7, **kwargs):
+def ResidualUnit(channels: int, dilation: int, kernel_size: int = 7, **kwargs):
     return Residual(
         nn.Sequential(
-            CausalConv1d(in_channels, out_channels, kernel_size,
+            CausalConv1d(channels, channels, kernel_size,
                          dilation=dilation, **kwargs),
             nn.ELU(),
-            CausalConv1d(out_channels, out_channels, kernel_size=1, **kwargs),
+            CausalConv1d(channels, channels, kernel_size=1, **kwargs),
             nn.ELU()
         )
     )
@@ -165,8 +171,10 @@ class CausalConvTranspose1d(nn.ConvTranspose1d):
 class FiLM(nn.Module):
     def __init__(self, dim: int, conditioning_dim: int):
         super().__init__()
-        self.to_condition = nn.Linear(conditioning_dim, dim * 2)
+        self.to_gamma = nn.Linear(conditioning_dim, dim)
+        self.to_beta = nn.Linear(conditioning_dim, dim)
 
     def forward(self, x: torch.Tensor, condition: torch.Tensor):
-        gamma, beta = self.to_condition(condition).chunk(2, dim=-1)
+        gamma = self.to_gamma(condition).unsqueeze(dim=-1)
+        beta = self.to_beta(condition).unsqueeze(dim=-1)
         return x * gamma + beta
