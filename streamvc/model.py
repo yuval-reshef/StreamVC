@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
-from einops import pack, unpack
-from streamvc.encoder_decoder import Encoder, Decoder, LearnablePooling
-from streamvc.f0 import F0Estimator, F0Whitening
+from einops import pack
+from streamvc.encoder_decoder import Encoder, Decoder
+from streamvc.modules import LearnablePooling
+from streamvc.f0 import F0Estimator
 from streamvc.energy import EnergyEstimator
+from streamvc._utils import auto_batching
 
 
 class StreamVC(nn.Module):
@@ -13,19 +15,15 @@ class StreamVC(nn.Module):
         self.speech_encoder = Encoder(scale=32, embedding_dim=64)
         self.speech_pooling = LearnablePooling(dim=64)
         self.decoder = Decoder(scale=40, embedding_dim=64, conditioning_dim=64)
-        self.f0_estimator = F0Estimator()
-        self.f0_whitening = F0Whitening()
+        self.f0_estimator = F0Estimator(whitening=True)
         self.energy_estimator = EnergyEstimator()
 
+    @auto_batching(('* t', '* t'), '* t')
     def forward(self, source_speech: torch.Tensor, target_speech: torch.Tensor) -> torch.Tensor:
-        source_speech, batch_dims = pack(
-            [source_speech], '* t')  # ensure batch dimension
         content_latent = self.content_encoder(source_speech)
         content_latent = content_latent.detach()
-        target_latent = self.speech_encoder(self.speech_pooling(target_speech))
-        f0 = self.f0_estimator(self.f0_whitening(source_speech))
+        target_latent = self.speech_pooling(self.speech_encoder(target_speech))
+        f0 = self.f0_estimator(source_speech)
         energy = self.energy_estimator(source_speech)
-        z = torch.concatenate([content_latent, f0, energy], dim=1)
-        output = self.decoder(z, target_latent)
-        output = unpack(output, batch_dims, '* t')
-        return output
+        z = pack([content_latent, f0, energy], 'b f *')
+        return self.decoder(z, target_latent)
