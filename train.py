@@ -45,7 +45,7 @@ def get_batch(samples_iterator: Iterator, batch_size: int, resampler: T.Resample
     return concat_and_pad_tensors(samples)
 
 
-def train(batch_size: int) -> Optional[torch.Tensor]:
+def iterate_dataset_batches_1(batch_size: int) -> Optional[torch.Tensor]:
     data_iter = iter(load_dataset(TRAIN_DATASET, "clean", split="train.clean.100", streaming=True))
     resampler = T.Resample(DATASET_SAMPLE_RATE, SAMPLE_RATE)
     resampler.to(torch.float32)
@@ -56,7 +56,20 @@ def train(batch_size: int) -> Optional[torch.Tensor]:
         # TODO instead of returning batch, train.
         return batch
 
-first_batch = train(BATCH_SIZE)
+
+def iterate_dataset_batches_2(batch_size: int) -> Optional[torch.Tensor]:
+    dataset = load_dataset(TRAIN_DATASET, "clean", split="train.clean.100", streaming=True)
+    resampler = T.Resample(DATASET_SAMPLE_RATE, SAMPLE_RATE)
+    resampler.to(torch.float32)
+    for batch in dataset.iter(batch_size=batch_size):
+        audios_data = batch["audio"]
+        audio_waveforms = [resampler(torch.from_numpy(audio_data["array"].astype(np.float32))) for audio_data in audios_data]
+        tensor_batch = concat_and_pad_tensors(audio_waveforms)
+        return tensor_batch
+
+
+# first_batch = iterate_dataset_batches_1(BATCH_SIZE)
+first_batch = iterate_dataset_batches_2(BATCH_SIZE)
 # %%
 content_encoder = Encoder(scale=64, embedding_dim=64)
 
@@ -93,5 +106,5 @@ simple_batch = first_batch[0].unsqueeze(0).unsqueeze(0)
 print(simple_batch.shape)
 units = hubert.units(simple_batch)
 print(units.shape)
+print(units)
 # print(type(hubert))
-
