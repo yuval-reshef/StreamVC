@@ -10,13 +10,16 @@ import ssl
 import numpy as np
 import torch.optim as optim
 from streamvc.model import StreamVC
-from streamvc.train.hubert import HubertEncoder
+from streamvc.train.encoder_classifier import EncoderClassifier
 ssl._create_default_https_context = ssl._create_unverified_context
 
 DATASET_SAMPLE_RATE = 24000
 SAMPLE_RATE = 16000
+NUM_CLASSES = 100
 # TODO replace batch size to 128.
 BATCH_SIZE = 4
+# TODO maybe get embedding dims from other file.
+EMBEDDING_DIMS = 64
 
 
 #
@@ -98,7 +101,7 @@ print(units)
 
 streamvc_model = StreamVC()
 content_encoder = streamvc_model.content_encoder
-wrapped_content_encoder = HubertEncoder(content_encoder, 64, 100)
+wrapped_content_encoder = EncoderClassifier(content_encoder, EMBEDDING_DIMS, NUM_CLASSES)
 
 
 def get_batch_labels(hubert_model, batch: torch.Tensor) -> torch.Tensor:
@@ -115,10 +118,19 @@ def train_content_encoder(model: nn.Module):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
     for batch in batch_generator(BATCH_SIZE):
+        optimizer.zero_grad()
+
         labels = get_batch_labels(hubert_model, batch)
+        outputs = model(batch)
+        print(outputs.shape)
         print(labels.shape)
-        print(labels)
-        return
+        outputs_flat = outputs.view(-1, NUM_CLASSES)
+        labels_flat = labels.view(-1)
+        loss = criterion(outputs_flat, labels_flat)
+        loss.backward()
+        optimizer.step()
+        print(loss.item())
+        # TODO print loss divided by samples num.
 
 
 train_content_encoder(wrapped_content_encoder)
