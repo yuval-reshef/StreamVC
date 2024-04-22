@@ -13,7 +13,7 @@ class StreamVC(nn.Module):
         super().__init__()
         self.content_encoder = Encoder(scale=64, embedding_dim=64)
         self.speech_encoder = Encoder(scale=32, embedding_dim=64)
-        self.speech_pooling = LearnablePooling(dim=64)
+        self.speech_pooling = LearnablePooling(embedding_dim=64)
         self.decoder = Decoder(scale=40, embedding_dim=64, conditioning_dim=64)
         self.f0_estimator = F0Estimator(whitening=True)
         self.energy_estimator = EnergyEstimator()
