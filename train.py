@@ -61,12 +61,37 @@ first_batch = train(BATCH_SIZE)
 content_encoder = Encoder(scale=64, embedding_dim=64)
 
 print(first_batch.shape)
-thin_batch = first_batch[:2, :]
-print(f"{thin_batch.shape=}")
-print(type(content_encoder))
-output = content_encoder(thin_batch)
+single_sample_batch = first_batch[0].unsqueeze(0)
+print(f"{single_sample_batch.shape=}")
+output = content_encoder(single_sample_batch)
 print(output.shape)
 # %%
+# Apply hubert on a wav file
+
+import torchaudio
+
 hubert = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
-out = hubert.units(first_batch)
+wav, sr = torchaudio.load("/Users/yonicohen/Documents/university/Masters/yearA/AUDIO-83091/Exercises/Ex2/code/recordings/male-4-4.wav")
+assert sr == 16000
+wav = wav.unsqueeze(0)
+print(wav.shape)
+units = hubert.units(wav)
+print(units.shape)
+print(type(hubert))
+
+# Extract speech units
+
+
+# %%
+# Apply hubert on libritts
+
+import torchaudio
+
+hubert = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
+simple_batch = first_batch[0].unsqueeze(0).unsqueeze(0)
+# simple_batch = simple_batch.unsqueeze(1)[0, :, :]
+print(simple_batch.shape)
+units = hubert.units(simple_batch)
+print(units.shape)
+# print(type(hubert))
 
