@@ -7,15 +7,17 @@ import torch.nn as nn
 import torchaudio.transforms as T
 from typing import Iterator, Optional
 import ssl
-from streamvc.encoder_decoder import Encoder
 import numpy as np
+import torch.optim as optim
+from streamvc.model import StreamVC
+from streamvc.train.hubert import HubertEncoder
 ssl._create_default_https_context = ssl._create_unverified_context
 
-
-TRAIN_DATASET = "blabble-io/libritts"
 DATASET_SAMPLE_RATE = 24000
 SAMPLE_RATE = 16000
-BATCH_SIZE = 128
+# TODO replace batch size to 128.
+BATCH_SIZE = 4
+
 
 #
 # parser = argparse.ArgumentParser(
@@ -46,7 +48,7 @@ def get_batch(samples_iterator: Iterator, batch_size: int, resampler: T.Resample
 
 
 def iterate_dataset_batches_1(batch_size: int) -> Optional[torch.Tensor]:
-    data_iter = iter(load_dataset(TRAIN_DATASET, "clean", split="train.clean.100", streaming=True))
+    data_iter = iter(load_dataset("blabble-io/libritts", "clean", split="train.clean.100", streaming=True))
     resampler = T.Resample(DATASET_SAMPLE_RATE, SAMPLE_RATE)
     resampler.to(torch.float32)
     while True:
@@ -57,42 +59,25 @@ def iterate_dataset_batches_1(batch_size: int) -> Optional[torch.Tensor]:
         return batch
 
 
-def iterate_dataset_batches_2(batch_size: int) -> Optional[torch.Tensor]:
-    dataset = load_dataset(TRAIN_DATASET, "clean", split="train.clean.100", streaming=True)
+def batch_generator(batch_size: int) -> Optional[torch.Tensor]:
+    dataset = load_dataset("blabble-io/libritts", "clean", split="train.clean.100", streaming=True)
     resampler = T.Resample(DATASET_SAMPLE_RATE, SAMPLE_RATE)
     resampler.to(torch.float32)
     for batch in dataset.iter(batch_size=batch_size):
         audios_data = batch["audio"]
-        audio_waveforms = [resampler(torch.from_numpy(audio_data["array"].astype(np.float32))) for audio_data in audios_data]
+        audio_waveforms = [resampler(torch.from_numpy(audio_data["array"].astype(np.float32))) for audio_data in
+                           audios_data]
         tensor_batch = concat_and_pad_tensors(audio_waveforms)
-        return tensor_batch
+        yield tensor_batch
 
 
-# first_batch = iterate_dataset_batches_1(BATCH_SIZE)
-first_batch = iterate_dataset_batches_2(BATCH_SIZE)
+first_batch = iterate_dataset_batches_1(BATCH_SIZE)
 # %%
-content_encoder = Encoder(scale=64, embedding_dim=64)
-
-print(first_batch.shape)
-single_sample_batch = first_batch[0].unsqueeze(0)
-print(f"{single_sample_batch.shape=}")
-output = content_encoder(single_sample_batch)
-print(output.shape)
-# %%
-# Apply hubert on a wav file
-
-import torchaudio
-
-hubert = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
-wav, sr = torchaudio.load("/Users/yonicohen/Documents/university/Masters/yearA/AUDIO-83091/Exercises/Ex2/code/recordings/male-4-4.wav")
-assert sr == 16000
-wav = wav.unsqueeze(0)
-print(wav.shape)
-units = hubert.units(wav)
-print(units.shape)
-print(type(hubert))
-
-# Extract speech units
+streamvc_model = StreamVC()
+content_encoder = streamvc_model.content_encoder
+print(f"{first_batch.shape=}")
+output = content_encoder(first_batch)
+print(f"{output.shape}")
 
 
 # %%
@@ -108,3 +93,32 @@ units = hubert.units(simple_batch)
 print(units.shape)
 print(units)
 # print(type(hubert))
+
+# %%
+
+streamvc_model = StreamVC()
+content_encoder = streamvc_model.content_encoder
+wrapped_content_encoder = HubertEncoder(content_encoder, 64, 100)
+
+
+def get_batch_labels(hubert_model, batch: torch.Tensor) -> torch.Tensor:
+    labels = []
+    for sample in batch:
+        single_sample_batch = sample.unsqueeze(0).unsqueeze(0)
+        labels.append(hubert_model.units(single_sample_batch))
+    return torch.stack(labels, dim=0)
+
+
+def train_content_encoder(model: nn.Module):
+    # TODO add epochs
+    hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+    for batch in batch_generator(BATCH_SIZE):
+        labels = get_batch_labels(hubert_model, batch)
+        print(labels.shape)
+        print(labels)
+        return
+
+
+train_content_encoder(wrapped_content_encoder)
