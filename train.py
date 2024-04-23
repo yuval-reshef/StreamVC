@@ -50,16 +50,11 @@ def get_batch(samples_iterator: Iterator, batch_size: int, resampler: T.Resample
     return concat_and_pad_tensors(samples)
 
 
-def iterate_dataset_batches_1(batch_size: int) -> Optional[torch.Tensor]:
+def get_first_batch(batch_size: int) -> Optional[torch.Tensor]:
     data_iter = iter(load_dataset("blabble-io/libritts", "clean", split="train.clean.100", streaming=True))
     resampler = T.Resample(DATASET_SAMPLE_RATE, SAMPLE_RATE)
     resampler.to(torch.float32)
-    while True:
-        batch = get_batch(data_iter, batch_size, resampler)
-        if batch is None:
-            return None
-        # TODO instead of returning batch, train.
-        return batch
+    return get_batch(data_iter, batch_size, resampler)
 
 
 def batch_generator(batch_size: int) -> Optional[torch.Tensor]:
@@ -74,36 +69,30 @@ def batch_generator(batch_size: int) -> Optional[torch.Tensor]:
         yield tensor_batch
 
 
-first_batch = iterate_dataset_batches_1(BATCH_SIZE)
 # %%
-streamvc_model = StreamVC()
-content_encoder = streamvc_model.content_encoder
-print(f"{first_batch.shape=}")
-output = content_encoder(first_batch)
-print(f"{output.shape}")
+def streamvc_encoder_example(batch: Optional[torch.Tensor] = None):
+    if batch is None:
+        batch = get_first_batch(BATCH_SIZE)
+    streamvc_model = StreamVC()
+    content_encoder = streamvc_model.content_encoder
+    print(f"{batch.shape=}")
+    output = content_encoder(batch)
+    print(f"{output.shape}")
 
 
 # %%
 # Apply hubert on libritts
-
-import torchaudio
-
-hubert = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
-simple_batch = first_batch[0].unsqueeze(0).unsqueeze(0)
-# simple_batch = simple_batch.unsqueeze(1)[0, :, :]
-print(simple_batch.shape)
-units = hubert.units(simple_batch)
-print(units.shape)
-print(units)
-# print(type(hubert))
+def hubert_example(batch: Optional[torch.Tensor] = None):
+    if batch is None:
+        batch = get_first_batch(BATCH_SIZE)
+    hubert = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
+    simple_batch = batch[0].unsqueeze(0).unsqueeze(0)
+    print(simple_batch.shape)
+    units = hubert.units(simple_batch)
+    print(units.shape)
+    print(units)
 
 # %%
-
-streamvc_model = StreamVC()
-content_encoder = streamvc_model.content_encoder
-wrapped_content_encoder = EncoderClassifier(content_encoder, EMBEDDING_DIMS, NUM_CLASSES)
-
-
 def get_batch_labels(hubert_model, batch: torch.Tensor) -> torch.Tensor:
     labels = []
     for sample in batch:
@@ -112,16 +101,15 @@ def get_batch_labels(hubert_model, batch: torch.Tensor) -> torch.Tensor:
     return torch.stack(labels, dim=0)
 
 
-def train_content_encoder(model: nn.Module):
+def train_content_encoder(encoder_classifier: nn.Module):
     # TODO add epochs
     hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+    optimizer = optim.SGD(encoder_classifier.parameters(), lr=0.001, momentum=0.9)
     for batch in batch_generator(BATCH_SIZE):
         optimizer.zero_grad()
-
         labels = get_batch_labels(hubert_model, batch)
-        outputs = model(batch)
+        outputs = encoder_classifier(batch)
         print(outputs.shape)
         print(labels.shape)
         outputs_flat = outputs.view(-1, NUM_CLASSES)
@@ -133,4 +121,16 @@ def train_content_encoder(model: nn.Module):
         # TODO print loss divided by samples num.
 
 
-train_content_encoder(wrapped_content_encoder)
+def main():
+    streamvc_model = StreamVC()
+    content_encoder = streamvc_model.content_encoder
+    wrapped_content_encoder = EncoderClassifier(content_encoder, EMBEDDING_DIMS, NUM_CLASSES)
+    train_content_encoder(wrapped_content_encoder)
+
+if __name__ == '__main__':
+    main()
+
+
+
+
+
