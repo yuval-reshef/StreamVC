@@ -23,6 +23,9 @@ NUM_CLASSES = 100
 # TODO: Change batch size to 128 if we manage to run it faster.
 BATCH_SIZE = 4
 EMBEDDING_DIMS = 64
+BETAS = (0.9, 0.98)
+EPS = 1e-06
+WEIGHT_DECAY = 1e-2
 
 
 def concat_and_pad_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
@@ -124,43 +127,58 @@ def get_batch_labels(hubert_model: nn.Module, batch: torch.Tensor) -> torch.Tens
     return torch.stack(labels, dim=0)
 
 
-def train_content_encoder(content_encoder: nn.Module, lr: float) -> None:
+def train_content_encoder(content_encoder: nn.Module, lr: float, num_epochs: int) -> None:
     """
     Train a content encoder as a classifier to predict the same labels as a discrete hubert model.
 
     :param content_encoder: A content encoder wrapped with a linear layer to
     :param lr: Learning rate.
+    :param num_epochs: Number of epochs.
     """
     # TODO: add epochs or number of steps when we know how much time it takes to train the model.
     hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
     wrapped_content_encoder = EncoderClassifier(content_encoder, EMBEDDING_DIMS, NUM_CLASSES)
     criterion = nn.CrossEntropyLoss()
     # TODO: Consider using AdamW instead.
-    optimizer = optim.SGD(wrapped_content_encoder.parameters(), lr=lr, momentum=0.9)
+    optimizer = optim.AdamW(
+        wrapped_content_encoder.parameters(),
+        lr=lr,
+        betas=BETAS,
+        eps=EPS,
+        weight_decay=WEIGHT_DECAY,
+    )
+    for epoch in range(1, num_epochs + 1):
+        step = 0
+        running_loss = 0.0
+        running_loss_samples_num = 0
+        for batch in batch_generator(BATCH_SIZE):
+            step += 1
+            optimizer.zero_grad()
 
-    for batch in batch_generator(BATCH_SIZE):
-        optimizer.zero_grad()
+            labels = get_batch_labels(hubert_model, batch)
+            outputs = wrapped_content_encoder(batch)
+            outputs_flat = outputs.view(-1, NUM_CLASSES)
+            labels_flat = labels.view(-1)
 
-        labels = get_batch_labels(hubert_model, batch)
-        outputs = wrapped_content_encoder(batch)
-        print(outputs.shape)
-        print(labels.shape)
-        outputs_flat = outputs.view(-1, NUM_CLASSES)
-        labels_flat = labels.view(-1)
+            loss = criterion(outputs_flat, labels_flat)
+            loss.backward()
+            optimizer.step()
 
-        loss = criterion(outputs_flat, labels_flat)
-        loss.backward()
-        optimizer.step()
-
-        print(loss.item() / labels_flat.shape[0])
-        # TODO: Print loss divided by samples num.
+            running_loss += loss.item()
+            running_loss_samples_num += labels_flat.shape[0]
+            if step % 5 == 0:  # print every 5 mini-batches
+                print('[%d, %5d] loss: %.4f' %
+                      (epoch, step, running_loss / running_loss_samples_num))
+                running_loss = 0.0
+                running_loss_samples_num = 0
+            # TODO: Print loss divided by samples num.
 
 
 def main(args: argparse.Namespace):
     """Main function for training StreamVC model."""
     streamvc_model = StreamVC()
     content_encoder = streamvc_model.content_encoder
-    train_content_encoder(content_encoder, args.ce_lr)
+    train_content_encoder(content_encoder, args.ce_lr, args.ce_epochs)
     # TODO: Copy trained encoder to `streamvc_model`.
     # TODO: Train `streamvc_model`.
 
@@ -171,8 +189,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         prog='StreamVC Training Script',
         description='Training script for StreamVC model, using the LibriTTS dataset')
-    parser.add_argument("--ce_lr", type=float, default=0.001,
-                        help="Learning rate for content encoder training")
+    parser.add_argument("--ce_lr", type=float, default=0.005,
+                        help="Learning rate for content encoder training.")
+    parser.add_argument("--ce_epochs", type=int, default=1,
+                        help="Number of epochs for content encoder training.")
     args = parser.parse_args()
 
     main(args)
