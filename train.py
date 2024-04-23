@@ -1,47 +1,65 @@
-# %%
+""" StreamVC training script.
+TODO: Complete after we decide where we keep the output model.
+
+Example usage:
+    python train.py --ce_lr=0.0001
+"""
 import argparse
 
 from datasets import load_dataset
 import torch
 import torch.nn as nn
 import torchaudio.transforms as T
-from typing import Iterator, Optional
+from typing import Optional
 import ssl
 import numpy as np
 import torch.optim as optim
 from streamvc.model import StreamVC
 from streamvc.train.encoder_classifier import EncoderClassifier
-ssl._create_default_https_context = ssl._create_unverified_context
 
 DATASET_SAMPLE_RATE = 24000
 SAMPLE_RATE = 16000
 NUM_CLASSES = 100
-# TODO replace batch size to 128.
+# TODO: Change batch size to 128 if we manage to run it faster.
 BATCH_SIZE = 4
-# TODO maybe get embedding dims from other file.
 EMBEDDING_DIMS = 64
 
 
-#
-# parser = argparse.ArgumentParser(
-#     prog='StreamVC Training Script',
-#     description='Training script for StreamVC model, using the LibriTTS dataset')
-#
-#
-# args = parser.parse_args()
-
 def concat_and_pad_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
+    """
+    Concatenate tensors with variable length by padding with zeros at the end.
+    :param tensors: A list of 1 dimension tensors.
+    :return: A tensor of the concatenated input tensors padded with zeros at the end to match the length of the largest
+             input tensor.
+    Example:
+      Input: list([1],
+                  [2, 3],
+                  [4, 5, 6])
+      Output: torch.Tensor([[1, 0, 0],
+                            [2, 3, 0],
+                            [4, 5, 6]])
+    """
     max_len = max([tensor.shape[0] for tensor in tensors])
     padded_vectors = [nn.functional.pad(vec, (0, max_len - vec.shape[0]), mode='constant', value=0) for vec in tensors]
     concatenated_vectors = torch.stack(padded_vectors, dim=0)
     return concatenated_vectors
 
 
-def get_batch(samples_iterator: Iterator, batch_size: int, resampler: T.Resample) -> Optional[torch.Tensor]:
+def get_first_batch(batch_size: int) -> Optional[torch.Tensor]:
+    # TODO: Delete if we don't use.
+    """
+    Returns the first batch from LibriTTS.
+
+    :param batch_size: The batch size.
+    :return: The first batch from LibriTTS.
+    """
+    data_iter = iter(load_dataset("blabble-io/libritts", "clean", split="train.clean.100", streaming=True))
+    resampler = T.Resample(DATASET_SAMPLE_RATE, SAMPLE_RATE)
+    resampler.to(torch.float32)
     samples = []
     for _ in range(batch_size):
         try:
-            sample = next(samples_iterator)
+            sample = next(data_iter)
             audio = torch.from_numpy(sample["audio"]["array"].astype(np.float32))
             resampled_audio = resampler(audio)
             samples.append(resampled_audio)
@@ -50,14 +68,13 @@ def get_batch(samples_iterator: Iterator, batch_size: int, resampler: T.Resample
     return concat_and_pad_tensors(samples)
 
 
-def get_first_batch(batch_size: int) -> Optional[torch.Tensor]:
-    data_iter = iter(load_dataset("blabble-io/libritts", "clean", split="train.clean.100", streaming=True))
-    resampler = T.Resample(DATASET_SAMPLE_RATE, SAMPLE_RATE)
-    resampler.to(torch.float32)
-    return get_batch(data_iter, batch_size, resampler)
-
-
 def batch_generator(batch_size: int) -> Optional[torch.Tensor]:
+    """
+    Generates the next batch from LibriTTS.
+
+    :param batch_size: The batch size.
+    :return: The next batch from LibriTTS.
+    """
     dataset = load_dataset("blabble-io/libritts", "clean", split="train.clean.100", streaming=True)
     resampler = T.Resample(DATASET_SAMPLE_RATE, SAMPLE_RATE)
     resampler.to(torch.float32)
@@ -69,8 +86,8 @@ def batch_generator(batch_size: int) -> Optional[torch.Tensor]:
         yield tensor_batch
 
 
-# %%
 def streamvc_encoder_example(batch: Optional[torch.Tensor] = None):
+    # TODO: Delete function when we finish with the training script.
     if batch is None:
         batch = get_first_batch(BATCH_SIZE)
     streamvc_model = StreamVC()
@@ -80,9 +97,8 @@ def streamvc_encoder_example(batch: Optional[torch.Tensor] = None):
     print(f"{output.shape}")
 
 
-# %%
-# Apply hubert on libritts
 def hubert_example(batch: Optional[torch.Tensor] = None):
+    # TODO: Delete function when we finish with the training script.
     if batch is None:
         batch = get_first_batch(BATCH_SIZE)
     hubert = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
@@ -92,8 +108,15 @@ def hubert_example(batch: Optional[torch.Tensor] = None):
     print(units.shape)
     print(units)
 
-# %%
-def get_batch_labels(hubert_model, batch: torch.Tensor) -> torch.Tensor:
+
+def get_batch_labels(hubert_model: nn.Module, batch: torch.Tensor) -> torch.Tensor:
+    """
+    Get hubert output labels for a given audio samples batch.
+
+    :param hubert_model: Hubert model with discrete output labels.
+    :param batch: A batch of audio samples.
+    :return: The output predictions generated by the Hubert model for the input batch.
+    """
     labels = []
     for sample in batch:
         single_sample_batch = sample.unsqueeze(0).unsqueeze(0)
@@ -101,36 +124,55 @@ def get_batch_labels(hubert_model, batch: torch.Tensor) -> torch.Tensor:
     return torch.stack(labels, dim=0)
 
 
-def train_content_encoder(encoder_classifier: nn.Module):
-    # TODO add epochs
+def train_content_encoder(content_encoder: nn.Module, lr: float) -> None:
+    """
+    Train a content encoder as a classifier to predict the same labels as a discrete hubert model.
+
+    :param content_encoder: A content encoder wrapped with a linear layer to
+    :param lr: Learning rate.
+    """
+    # TODO: add epochs or number of steps when we know how much time it takes to train the model.
     hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
+    wrapped_content_encoder = EncoderClassifier(content_encoder, EMBEDDING_DIMS, NUM_CLASSES)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(encoder_classifier.parameters(), lr=0.001, momentum=0.9)
+    # TODO: Consider using AdamW instead.
+    optimizer = optim.SGD(wrapped_content_encoder.parameters(), lr=lr, momentum=0.9)
+
     for batch in batch_generator(BATCH_SIZE):
         optimizer.zero_grad()
+
         labels = get_batch_labels(hubert_model, batch)
-        outputs = encoder_classifier(batch)
+        outputs = wrapped_content_encoder(batch)
         print(outputs.shape)
         print(labels.shape)
         outputs_flat = outputs.view(-1, NUM_CLASSES)
         labels_flat = labels.view(-1)
+
         loss = criterion(outputs_flat, labels_flat)
         loss.backward()
         optimizer.step()
-        print(loss.item())
-        # TODO print loss divided by samples num.
+
+        print(loss.item() / labels_flat.shape[0])
+        # TODO: Print loss divided by samples num.
 
 
-def main():
+def main(args: argparse.Namespace):
+    """Main function for training StreamVC model."""
     streamvc_model = StreamVC()
     content_encoder = streamvc_model.content_encoder
-    wrapped_content_encoder = EncoderClassifier(content_encoder, EMBEDDING_DIMS, NUM_CLASSES)
-    train_content_encoder(wrapped_content_encoder)
+    train_content_encoder(content_encoder, args.ce_lr)
+    # TODO: Copy trained encoder to `streamvc_model`.
+    # TODO: Train `streamvc_model`.
+
 
 if __name__ == '__main__':
-    main()
+    ssl._create_default_https_context = ssl._create_unverified_context
 
+    parser = argparse.ArgumentParser(
+        prog='StreamVC Training Script',
+        description='Training script for StreamVC model, using the LibriTTS dataset')
+    parser.add_argument("--ce_lr", type=float, default=0.001,
+                        help="Learning rate for content encoder training")
+    args = parser.parse_args()
 
-
-
-
+    main(args)
