@@ -31,6 +31,7 @@ DATASET_PATH = "blabble-io/libritts"
 # TODO: Change to 500.
 TRAIN_SPLIT = "train.clean.100"
 TEST_SPLIT = "test.clean"
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def concat_and_pad_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
@@ -117,6 +118,7 @@ def hubert_example(batch: Optional[torch.Tensor] = None):
     print(units)
 
 
+@torch.no_grad()
 def get_batch_labels(hubert_model: nn.Module, batch: torch.Tensor) -> torch.Tensor:
     """
     Get hubert output labels for a given audio samples batch.
@@ -143,7 +145,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, l
     :return: The trained content encoder wrapped with a linear layer for classification.
     """
     # TODO: add epochs or number of steps when we know how much time it takes to train the model.
-    wrapped_content_encoder = EncoderClassifier(content_encoder, EMBEDDING_DIMS, NUM_CLASSES)
+    wrapped_content_encoder = EncoderClassifier(content_encoder, EMBEDDING_DIMS, NUM_CLASSES).to(DEVICE)
     criterion = nn.CrossEntropyLoss()
     # TODO: Consider using AdamW instead.
     optimizer = optim.AdamW(
@@ -159,6 +161,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, l
         running_loss_samples_num = 0
         dataset = load_dataset(DATASET_PATH, "all", split=TRAIN_SPLIT, streaming=True)
         for batch in batch_generator(dataset, BATCH_SIZE):
+            batch = batch.to(DEVICE)
             step += 1
             optimizer.zero_grad()
 
@@ -201,9 +204,10 @@ def compute_accuracy(wrapped_content_encoder: nn.Module, hubert_model: nn.Module
 
 def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
     """Main function for training StreamVC model."""
-    streamvc_model = StreamVC()
+    streamvc_model = StreamVC().to(DEVICE)
     content_encoder = streamvc_model.content_encoder
-    hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
+    hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True) \
+        .to(DEVICE).eval()
     wrapped_content_encoder = train_content_encoder(content_encoder, hubert_model, args.ce_lr, args.ce_epochs)
     if show_accuracy:
         compute_accuracy(wrapped_content_encoder, hubert_model)
