@@ -28,6 +28,7 @@ BETAS = (0.9, 0.98)
 EPS = 1e-06
 WEIGHT_DECAY = 1e-2
 DATASET_PATH = "blabble-io/libritts"
+# TODO: Change to 500.
 TRAIN_SPLIT = "train.clean.100"
 TEST_SPLIT = "test.clean"
 
@@ -156,7 +157,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, l
         step = 0
         running_loss = 0.0
         running_loss_samples_num = 0
-        dataset = load_dataset(DATASET_PATH, "clean", split=TRAIN_SPLIT, streaming=True)
+        dataset = load_dataset(DATASET_PATH, "all", split=TRAIN_SPLIT, streaming=True)
         for batch in batch_generator(dataset, BATCH_SIZE):
             step += 1
             optimizer.zero_grad()
@@ -207,8 +208,6 @@ def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
     if show_accuracy:
         compute_accuracy(wrapped_content_encoder, hubert_model)
     # TODO: Train `streamvc_model`.
-
-
 
 
 if __name__ == '__main__':
