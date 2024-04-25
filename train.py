@@ -18,13 +18,12 @@ import torch.optim as optim
 from streamvc.model import StreamVC
 from streamvc.train.encoder_classifier import EncoderClassifier
 from streamvc.train.discriminator import Discriminator
+from torchaudio.transforms import MelSpectrogram
 from pathlib import Path
 import yaml
 from torch.utils.tensorboard import SummaryWriter
 import time
 import torch.nn.functional as F
-
-
 
 DATASET_SAMPLE_RATE = 24000
 SAMPLE_RATE = 16000
@@ -35,11 +34,15 @@ EMBEDDING_DIMS = 64
 BETAS = (0.9, 0.98)
 EPS = 1e-06
 WEIGHT_DECAY = 1e-2
+MEL_BINS = 64
 DATASET_PATH = "blabble-io/libritts"
 # TODO: Change to 500.
 TRAIN_SPLIT = "train.clean.100"
 TEST_SPLIT = "test.clean"
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+LAMBDA_ADV = 1
+LAMBDA_FEAT = 100
+LAMBDA_REC = 1
 
 
 def save_net(net, path):
@@ -119,9 +122,7 @@ def streamvc_encoder_example(batch: Optional[torch.Tensor] = None):
         batch = get_first_batch(BATCH_SIZE)
     streamvc_model = StreamVC()
     content_encoder = streamvc_model.content_encoder
-    print(f"{batch.shape=}")
     output = content_encoder(batch)
-    print(f"{output.shape}")
 
 
 def hubert_example(batch: Optional[torch.Tensor] = None):
@@ -130,10 +131,7 @@ def hubert_example(batch: Optional[torch.Tensor] = None):
         batch = get_first_batch(BATCH_SIZE)
     hubert = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True)
     simple_batch = batch[0].unsqueeze(0).unsqueeze(0)
-    print(simple_batch.shape)
     units = hubert.units(simple_batch)
-    print(units.shape)
-    print(units)
 
 
 @torch.no_grad()
@@ -232,6 +230,44 @@ class AdditiveModule(nn.Module):
         return x1 + self.a
 
 
+def get_reconstruction_loss(orig_audio: torch.Tensor, generated_audio: torch.Tensor) -> torch.Tensor:
+    """
+    Returns the reconstruction loss for the generated audio compared to the original audio.
+    :param orig_audio: The real original audio of shape [batch_size, 1, samples_num].
+    :param generated_audio: The generated audio of the same shape as `orig_audio`.
+    :return: The reconstruction loss.
+    """
+    assert orig_audio.shape == generated_audio.shape
+    loss = torch.tensor(0.).to(DEVICE)
+    for s_exp in range(6, 12):
+        s = 2 ** s_exp
+        window_size = s
+        hop_length = int(s / 4)
+        mel_spectrogram = MelSpectrogram(
+            sample_rate=SAMPLE_RATE,
+            win_length=window_size,
+            n_fft=window_size,
+            hop_length=hop_length,
+            n_mels=MEL_BINS
+        )
+        orig_audio_spec = mel_spectrogram(orig_audio)
+        generated_audio_spec = mel_spectrogram(generated_audio)
+
+        # TODO: Check that this is indeed the number of frames and the loss is computed correctly.
+        n_frames = orig_audio_spec.shape[-1]
+        reshaped_orig_audio_spec = orig_audio_spec.reshape(-1, n_frames)
+        reshaped_generated_audio_spec = generated_audio_spec.reshape(-1, n_frames)
+
+        alpha_s = torch.sqrt(torch.tensor(s).to(DEVICE) / 2).to(DEVICE)
+        for t in range(n_frames):
+            orig_t_frame = reshaped_orig_audio_spec[:, t]
+            generated_t_frame = reshaped_generated_audio_spec[:, t]
+            l1_loss = F.l1_loss(orig_t_frame, generated_t_frame)
+            l2_log_loss = F.mse_loss(torch.log(orig_t_frame), torch.log(generated_t_frame))
+            loss += l1_loss + alpha_s * l2_log_loss
+    return loss
+
+
 def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     # TODO consider passing the parameters one by one instead of passing args.
     streamvc_model.to(DEVICE)
@@ -284,25 +320,19 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     steps = 0
     dataset = load_dataset(DATASET_PATH, "clean", split=TRAIN_SPLIT, streaming=True)
     for epoch in range(1, args.svc_epochs + 1):
-        step = 0
         for batch in batch_generator(dataset, BATCH_SIZE):
-            step += 1
-            print(f"{step=}")
+            print(f"{steps=}")
             batch.to(DEVICE)
-            print(batch.shape)
             x_pred_t = netG(batch, batch)
             x_pred_t = x_pred_t.unsqueeze(1)
             batch = batch.unsqueeze(1)
-            print(x_pred_t.shape)
 
             #######################
             # Train Discriminator #
             #######################
 
             D_fake_det = netD(x_pred_t.detach())
-            print(f"{D_fake_det=}")
             D_real = netD(batch)
-            print(f"f{D_real=}")
 
             loss_D = torch.tensor(0.).to(DEVICE)
             for scale in D_fake_det:
@@ -321,10 +351,12 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
             ###################
             D_fake = netD(x_pred_t.to(DEVICE))
 
+            # Compute adversarial loss.
             loss_G = torch.tensor(0.).to(DEVICE)
             for scale in D_fake:
                 loss_G += -scale[-1].mean()
 
+            # Compute feature loss.
             loss_feat = torch.tensor(0.).to(DEVICE)
             feat_weights = 4.0 / (args.n_layers_D + 1)
             D_weights = 1.0 / args.num_D
@@ -333,8 +365,11 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                 for j in range(len(D_fake[i]) - 1):
                     loss_feat += wt * F.l1_loss(D_fake[i][j], D_real[i][j].detach())
 
+            # Compute reconstruction loss.
+            loss_rec = get_reconstruction_loss(batch, x_pred_t)
+
             netG.zero_grad()
-            (loss_G + args.lambda_feat * loss_feat).backward()
+            (args.lambda_adv * loss_G + args.lambda_feat * loss_feat + args.lambda_rec * loss_rec).backward()
             optG.step()
 
             ######################
@@ -353,7 +388,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                 print(
                     "Epoch {} | Iters {} | ms/batch {:5.2f} | loss {}".format(
                         epoch,
-                        step,
+                        steps,
                         1000 * (time.time() - start) / args.log_interval,
                         np.asarray(costs).mean(0),
                     )
@@ -410,7 +445,9 @@ if __name__ == '__main__':
     parser.add_argument("--num_D", type=int, default=3)
     parser.add_argument("--n_layers_D", type=int, default=4)
     parser.add_argument("--downsamp_factor", type=int, default=4)
-    parser.add_argument("--lambda_feat", type=float, default=10)
+    parser.add_argument("--lambda_feat", type=float, default=100)
+    parser.add_argument("--lambda_rec", type=float, default=1)
+    parser.add_argument("--lambda_adv", type=float, default=1)
     parser.add_argument("--cond_disc", action="store_true")
 
     parser.add_argument("--data_path", default=None, type=Path)
