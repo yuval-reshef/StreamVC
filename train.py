@@ -231,8 +231,9 @@ class AdditiveModule(nn.Module):
         # Add the parameter 'a' to the input tensor 'x'
         return x1 + self.a
 
+
 def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
-    # TODO consider changing the args parameter to the real parameters.
+    # TODO consider passing the parameters one by one instead of passing args.
     streamvc_model.to(DEVICE)
     root = Path(args.save_path)
     load_root = Path(args.load_path) if args.load_path else None
@@ -299,7 +300,9 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
             #######################
 
             D_fake_det = netD(x_pred_t.detach())
+            print(f"{D_fake_det=}")
             D_real = netD(batch)
+            print(f"f{D_real=}")
 
             loss_D = torch.tensor(0.).to(DEVICE)
             for scale in D_fake_det:
@@ -375,6 +378,7 @@ def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
 
 if __name__ == '__main__':
     ssl._create_default_https_context = ssl._create_unverified_context
+    # TODO: Consider making some of the arguments constants.
 
     parser = argparse.ArgumentParser(
         prog='StreamVC Training Script',
