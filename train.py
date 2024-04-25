@@ -17,7 +17,13 @@ import numpy as np
 import torch.optim as optim
 from streamvc.model import StreamVC
 from streamvc.train.encoder_classifier import EncoderClassifier
-from streamvc.train.streamvc_discriminator import StreamVCDiscriminator
+from streamvc.train.streamvc_discriminator import Discriminator
+from pathlib import Path
+import yaml
+from torch.utils.tensorboard import SummaryWriter
+import time
+import torch.nn.functional as F
+
 
 
 DATASET_SAMPLE_RATE = 24000
@@ -37,13 +43,13 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def save_net(net, path):
-  torch.save(net.state_dict(), path)
+    torch.save(net.state_dict(), path)
+
 
 def load_net(net, path, eval_model: bool):
-  net.load_state_dict(torch.load(path))
-  if eval_model:
-    net.eval()
-
+    net.load_state_dict(torch.load(path))
+    if eval_model:
+        net.eval()
 
 
 def concat_and_pad_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
@@ -215,34 +221,126 @@ def compute_content_encoder_accuracy(wrapped_content_encoder: nn.Module, hubert_
 
 
 def train_streamvc(streamvc_model: StreamVC, lr: float, num_epochs: int) -> None:
-    discriminator = StreamVCDiscriminator(streamvc_model)
-    discriminator.to(DEVICE)
-    # TODO check if it is ok to use the same parameters.
-    streamvc_optimizer = optim.AdamW(
-        streamvc_model.parameters(),
-        lr=lr,
-        betas=BETAS,
-        eps=EPS,
-        weight_decay=WEIGHT_DECAY,
-    )
-    discriminator_optimizer = optim.AdamW(
-        discriminator.parameters(),
-        lr=lr,
-        betas=BETAS,
-        eps=EPS,
-        weight_decay=WEIGHT_DECAY,
-    )
-    for epoch in range(1, num_epochs + 1):
+    streamvc_model.to(DEVICE)
+    root = Path(args.save_path)
+    load_root = Path(args.load_path) if args.load_path else None
+    root.mkdir(parents=True, exist_ok=True)
+
+    ####################################
+    # Dump arguments and create logger #
+    ####################################
+    with open(root / "args.yml", "w") as f:
+        yaml.dump(args, f)
+    writer = SummaryWriter(str(root))
+
+    #######################
+    # Load PyTorch Models #
+    #######################
+    netG = streamvc_model
+    netD = Discriminator(
+        args.num_D, args.ndf, args.n_layers_D, args.downsamp_factor
+    ).to(DEVICE)
+    # fft = Audio2Mel(n_mel_channels=args.n_mel_channels).cuda()
+
+    print(netG)
+    print(netD)
+
+    #####################
+    # Create optimizers #
+    #####################
+    optG = torch.optim.Adam(netG.parameters(), lr=1e-4, betas=(0.5, 0.9))
+    optD = torch.optim.Adam(netD.parameters(), lr=1e-4, betas=(0.5, 0.9))
+
+    if load_root and load_root.exists():
+        netG.load_state_dict(torch.load(load_root / "netG.pt"))
+        optG.load_state_dict(torch.load(load_root / "optG.pt"))
+        netD.load_state_dict(torch.load(load_root / "netD.pt"))
+        optD.load_state_dict(torch.load(load_root / "optD.pt"))
+
+    ##########################
+    # Dumping original audio #
+    ##########################
+    test_voc = []
+    test_audio = []
+
+    costs = []
+    start = time.time()
+
+    # enable cudnn autotuner to speed up training
+    torch.backends.cudnn.benchmark = True
+
+    best_mel_reconst = 1000000
+    steps = 0
+    dataset = load_dataset(DATASET_PATH, "clean", split=TRAIN_SPLIT, streaming=True)
+    for epoch in range(1, args.epochs + 1):
         step = 0
-        running_loss = 0.0
-        running_loss_samples_num = 0
-        dataset = load_dataset(DATASET_PATH, "all", split=TRAIN_SPLIT, streaming=True)
         for batch in batch_generator(dataset, BATCH_SIZE):
-            batch = batch.to(DEVICE)
             step += 1
-            discriminator_optimizer.zero_grad()
-            streamvc_optimizer.zero_grad()
-            # TODO: Compute losses.
+            batch.to(DEVICE)
+            x_pred_t = netG(batch)
+
+            #######################
+            # Train Discriminator #
+            #######################
+            D_fake_det = netD(x_pred_t.detach())
+            D_real = netD(batch)
+
+            loss_D = torch.tensor(0.).to(DEVICE)
+            for scale in D_fake_det:
+                # TODO: Shouldn't it be min(0,...)? Relu is max...
+                loss_D += F.relu(1 + scale[-1]).mean()
+
+            for scale in D_real:
+                loss_D += F.relu(1 - scale[-1]).mean()
+
+            netD.zero_grad()
+            loss_D.backward()
+            optD.step()
+
+            ###################
+            # Train Generator #
+            ###################
+            D_fake = netD(x_pred_t.to(DEVICE))
+
+            loss_G = torch.tensor(0.).to(DEVICE)
+            for scale in D_fake:
+                loss_G += -scale[-1].mean()
+
+            loss_feat = torch.tensor(0.).to(DEVICE)
+            feat_weights = 4.0 / (args.n_layers_D + 1)
+            D_weights = 1.0 / args.num_D
+            wt = D_weights * feat_weights
+            for i in range(args.num_D):
+                for j in range(len(D_fake[i]) - 1):
+                    loss_feat += wt * F.l1_loss(D_fake[i][j], D_real[i][j].detach())
+
+            netG.zero_grad()
+            (loss_G + args.lambda_feat * loss_feat).backward()
+            optG.step()
+
+            ######################
+            # Update tensorboard #
+            ######################
+            costs.append([loss_D.item(), loss_G.item(), loss_feat.item()])
+
+            writer.add_scalar("loss/discriminator", costs[-1][0], steps)
+            writer.add_scalar("loss/generator", costs[-1][1], steps)
+            writer.add_scalar("loss/feature_matching", costs[-1][2], steps)
+            steps += 1
+
+            # TODO save checkpoint.
+
+            if steps % args.log_interval == 0:
+                print(
+                    "Epoch {} | Iters {} | ms/batch {:5.2f} | loss {}".format(
+                        epoch,
+                        step,
+                        1000 * (time.time() - start) / args.log_interval,
+                        np.asarray(costs).mean(0),
+                    )
+                )
+                costs = []
+                start = time.time()
 
 
 def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
