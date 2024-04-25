@@ -220,7 +220,19 @@ def compute_content_encoder_accuracy(wrapped_content_encoder: nn.Module, hubert_
             100 * correct / total))
 
 
-def train_streamvc(streamvc_model: StreamVC, lr: float, num_epochs: int) -> None:
+# TODO delete when we finish implementing StreamVC module.
+class AdditiveModule(nn.Module):
+    def __init__(self):
+        super(AdditiveModule, self).__init__()
+        # Define the parameter 'a' as a learnable parameter
+        self.a = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, x1, x2):
+        # Add the parameter 'a' to the input tensor 'x'
+        return x1 + self.a
+
+def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
+    # TODO consider changing the args parameter to the real parameters.
     streamvc_model.to(DEVICE)
     root = Path(args.save_path)
     load_root = Path(args.load_path) if args.load_path else None
@@ -236,14 +248,13 @@ def train_streamvc(streamvc_model: StreamVC, lr: float, num_epochs: int) -> None
     #######################
     # Load PyTorch Models #
     #######################
-    netG = streamvc_model
+    # TODO: When we finish implementing StreamVC, replace AdditiveModule with streamvc.
+    netG = AdditiveModule()
+    netG.to(DEVICE)
     netD = Discriminator(
         args.num_D, args.ndf, args.n_layers_D, args.downsamp_factor
     ).to(DEVICE)
     # fft = Audio2Mel(n_mel_channels=args.n_mel_channels).cuda()
-
-    print(netG)
-    print(netD)
 
     #####################
     # Create optimizers #
@@ -269,19 +280,24 @@ def train_streamvc(streamvc_model: StreamVC, lr: float, num_epochs: int) -> None
     # enable cudnn autotuner to speed up training
     torch.backends.cudnn.benchmark = True
 
-    best_mel_reconst = 1000000
     steps = 0
     dataset = load_dataset(DATASET_PATH, "clean", split=TRAIN_SPLIT, streaming=True)
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, args.svc_epochs + 1):
         step = 0
         for batch in batch_generator(dataset, BATCH_SIZE):
             step += 1
+            print(f"{step=}")
             batch.to(DEVICE)
-            x_pred_t = netG(batch)
+            print(batch.shape)
+            x_pred_t = netG(batch, batch)
+            x_pred_t = x_pred_t.unsqueeze(1)
+            batch = batch.unsqueeze(1)
+            print(x_pred_t.shape)
 
             #######################
             # Train Discriminator #
             #######################
+
             D_fake_det = netD(x_pred_t.detach())
             D_real = netD(batch)
 
@@ -346,13 +362,14 @@ def train_streamvc(streamvc_model: StreamVC, lr: float, num_epochs: int) -> None
 def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
     """Main function for training StreamVC model."""
     streamvc = StreamVC().to(DEVICE)
-    content_encoder = streamvc.content_encoder
-    hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True) \
-        .to(DEVICE).eval()
-    wrapped_content_encoder = train_content_encoder(content_encoder, hubert_model, args.ce_lr, args.ce_epochs)
-    if show_accuracy:
-        compute_content_encoder_accuracy(wrapped_content_encoder, hubert_model)
-    train_streamvc(streamvc, args.svc_lr, args.epochs)
+    # TODO consider adding an option to load content encoder instead of training.
+    # content_encoder = streamvc.content_encoder
+    # hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True) \
+    #     .to(DEVICE).eval()
+    # wrapped_content_encoder = train_content_encoder(content_encoder, hubert_model, args.ce_lr, args.ce_epochs)
+    # if show_accuracy:
+    #     compute_content_encoder_accuracy(wrapped_content_encoder, hubert_model)
+    train_streamvc(streamvc, args)
     # TODO: Train `streamvc_model`.
 
 
@@ -364,14 +381,42 @@ if __name__ == '__main__':
         description='Training script for StreamVC model, using the LibriTTS dataset. Consists of two training phases:'
                     '(1) Training the content encoder and (2) Training StreamVC which contains the trained content'
                     'encoder')
+
+    parser.add_argument("--save_path", type=str, default="out")
+    # parser.add_argument("--save_path", type=str, default="out", required=True)
+    parser.add_argument("--load_path", default=None)
+
+    # Encoder training arguments.
     parser.add_argument("--ce_lr", type=float, default=0.005,
                         help="Learning rate for content encoder training.")
     parser.add_argument("--ce_epochs", type=int, default=1,
                         help="Number of epochs for content encoder training.")
+
+    # StreamVC training arguments.
     parser.add_argument("--svc_lr", type=float, default=0.005,
                         help="Learning rate for StreamVC training.")
     parser.add_argument("--svc_epochs", type=int, default=1,
                         help="Number of epochs for StreamVC training.")
+
+    parser.add_argument("--n_mel_channels", type=int, default=80)
+    parser.add_argument("--ngf", type=int, default=32)
+    parser.add_argument("--n_residual_layers", type=int, default=3)
+
+    parser.add_argument("--ndf", type=int, default=16)
+    parser.add_argument("--num_D", type=int, default=3)
+    parser.add_argument("--n_layers_D", type=int, default=4)
+    parser.add_argument("--downsamp_factor", type=int, default=4)
+    parser.add_argument("--lambda_feat", type=float, default=10)
+    parser.add_argument("--cond_disc", action="store_true")
+
+    parser.add_argument("--data_path", default=None, type=Path)
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--seq_len", type=int, default=8192)
+
+    parser.add_argument("--log_interval", type=int, default=100)
+    parser.add_argument("--save_interval", type=int, default=1000)
+    parser.add_argument("--n_test_samples", type=int, default=8)
+
     args = parser.parse_args()
 
     main(args)
