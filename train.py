@@ -17,7 +17,7 @@ import numpy as np
 import torch.optim as optim
 from streamvc.model import StreamVC
 from streamvc.train.encoder_classifier import EncoderClassifier
-from streamvc.train.streamvc_discriminator import Discriminator
+from streamvc.train.discriminator import Discriminator
 from pathlib import Path
 import yaml
 from torch.utils.tensorboard import SummaryWriter
