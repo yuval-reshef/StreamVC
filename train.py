@@ -17,6 +17,8 @@ import numpy as np
 import torch.optim as optim
 from streamvc.model import StreamVC
 from streamvc.train.encoder_classifier import EncoderClassifier
+from streamvc.train.streamvc_discriminator import StreamVCDiscriminator
+
 
 DATASET_SAMPLE_RATE = 24000
 SAMPLE_RATE = 16000
@@ -32,6 +34,16 @@ DATASET_PATH = "blabble-io/libritts"
 TRAIN_SPLIT = "train.clean.100"
 TEST_SPLIT = "test.clean"
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+def save_net(net, path):
+  torch.save(net.state_dict(), path)
+
+def load_net(net, path, eval_model: bool):
+  net.load_state_dict(torch.load(path))
+  if eval_model:
+    net.eval()
+
 
 
 def concat_and_pad_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
@@ -147,7 +159,6 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, l
     # TODO: add epochs or number of steps when we know how much time it takes to train the model.
     wrapped_content_encoder = EncoderClassifier(content_encoder, EMBEDDING_DIMS, NUM_CLASSES).to(DEVICE)
     criterion = nn.CrossEntropyLoss()
-    # TODO: Consider using AdamW instead.
     optimizer = optim.AdamW(
         wrapped_content_encoder.parameters(),
         lr=lr,
@@ -176,6 +187,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, l
 
             running_loss += loss.item()
             running_loss_samples_num += labels_flat.shape[0]
+            # TODO save checkpoints
             if step % 5 == 0:  # print every 5 mini-batches
                 print('[%d, %5d] loss: %.4f' %
                       (epoch, step, running_loss / running_loss_samples_num))
@@ -184,7 +196,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, l
     return wrapped_content_encoder
 
 
-def compute_accuracy(wrapped_content_encoder: nn.Module, hubert_model: nn.Module):
+def compute_content_encoder_accuracy(wrapped_content_encoder: nn.Module, hubert_model: nn.Module):
     correct = 0
     total = 0
     with torch.no_grad():
@@ -202,15 +214,47 @@ def compute_accuracy(wrapped_content_encoder: nn.Module, hubert_model: nn.Module
             100 * correct / total))
 
 
+def train_streamvc(streamvc_model: StreamVC, lr: float, num_epochs: int) -> None:
+    discriminator = StreamVCDiscriminator(streamvc_model)
+    discriminator.to(DEVICE)
+    # TODO check if it is ok to use the same parameters.
+    streamvc_optimizer = optim.AdamW(
+        streamvc_model.parameters(),
+        lr=lr,
+        betas=BETAS,
+        eps=EPS,
+        weight_decay=WEIGHT_DECAY,
+    )
+    discriminator_optimizer = optim.AdamW(
+        discriminator.parameters(),
+        lr=lr,
+        betas=BETAS,
+        eps=EPS,
+        weight_decay=WEIGHT_DECAY,
+    )
+    for epoch in range(1, num_epochs + 1):
+        step = 0
+        running_loss = 0.0
+        running_loss_samples_num = 0
+        dataset = load_dataset(DATASET_PATH, "all", split=TRAIN_SPLIT, streaming=True)
+        for batch in batch_generator(dataset, BATCH_SIZE):
+            batch = batch.to(DEVICE)
+            step += 1
+            discriminator_optimizer.zero_grad()
+            streamvc_optimizer.zero_grad()
+            # TODO: Compute losses.
+
+
 def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
     """Main function for training StreamVC model."""
-    streamvc_model = StreamVC().to(DEVICE)
-    content_encoder = streamvc_model.content_encoder
+    streamvc = StreamVC().to(DEVICE)
+    content_encoder = streamvc.content_encoder
     hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True) \
         .to(DEVICE).eval()
     wrapped_content_encoder = train_content_encoder(content_encoder, hubert_model, args.ce_lr, args.ce_epochs)
     if show_accuracy:
-        compute_accuracy(wrapped_content_encoder, hubert_model)
+        compute_content_encoder_accuracy(wrapped_content_encoder, hubert_model)
+    train_streamvc(streamvc, args.svc_lr, args.epochs)
     # TODO: Train `streamvc_model`.
 
 
@@ -219,11 +263,17 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(
         prog='StreamVC Training Script',
-        description='Training script for StreamVC model, using the LibriTTS dataset')
+        description='Training script for StreamVC model, using the LibriTTS dataset. Consists of two training phases:'
+                    '(1) Training the content encoder and (2) Training StreamVC which contains the trained content'
+                    'encoder')
     parser.add_argument("--ce_lr", type=float, default=0.005,
                         help="Learning rate for content encoder training.")
     parser.add_argument("--ce_epochs", type=int, default=1,
                         help="Number of epochs for content encoder training.")
+    parser.add_argument("--svc_lr", type=float, default=0.005,
+                        help="Learning rate for StreamVC training.")
+    parser.add_argument("--svc_epochs", type=int, default=1,
+                        help="Number of epochs for StreamVC training.")
     args = parser.parse_args()
 
     main(args)
