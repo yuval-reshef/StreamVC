@@ -46,7 +46,7 @@ class CausalConv1d(nn.Conv1d):
             **kwargs
         )
 
-        causal_padding = dilation * (kernel_size - 1) - (stride - 1)
+        causal_padding = max(0, dilation * (kernel_size - 1) - (stride - 1))
 
         if padding_mode == 'zeros':
             self.pad = partial(F.pad, pad=(causal_padding, 0),
@@ -77,13 +77,18 @@ class CausalConvTranspose1d(nn.ConvTranspose1d):
             **kwargs
         )
 
-        self.causal_trim = dilation * (kernel_size - 1) - (stride - 1)
+        causal_trim = max(0, dilation * (kernel_size - 1) - (stride - 1))
+
+        # we trim the output on the right side
+        # see https://github.com/lucidrains/audiolm-pytorch/issues/8
+        if causal_trim > 0:
+            self.trim = lambda x: x[..., :-causal_trim]
+        else:
+            self.trim = lambda x: x
 
     def forward(self, x: torch.Tensor):
         out = super().forward(x)
-        # we trim the output on the right side
-        # see https://github.com/lucidrains/audiolm-pytorch/issues/8
-        return out[..., :-self.causal_trim]
+        return self.trim(out)
 
 
 class FiLM(nn.Module):
