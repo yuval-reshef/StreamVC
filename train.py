@@ -45,13 +45,25 @@ LAMBDA_FEAT = 100
 LAMBDA_REC = 1
 
 
-def save_net(net, path):
+def save_net(net: nn.Module, path: str) -> None:
+    """
+    Saves the model in the given path.
+    :param net: The model to save.
+    :param path: Path to save the model.
+    """
     torch.save(net.state_dict(), path)
 
 
-def load_net(net, path, eval_model: bool):
+def load_net(net, path, eval_mode: bool) -> None:
+    """
+    Loads the model from the given path.
+    :param net: The uninitialized model to be loaded.
+    :param path: The path to the parameters to load the model.
+    :param eval_mode: Whether to load the model in eval mode.
+    :return:
+    """
     net.load_state_dict(torch.load(path))
-    if eval_model:
+    if eval_mode:
         net.eval()
 
 
@@ -150,7 +162,8 @@ def get_batch_labels(hubert_model: nn.Module, batch: torch.Tensor) -> torch.Tens
     return torch.stack(labels, dim=0)
 
 
-def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, lr: float, num_epochs: int) -> nn.Module:
+def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, lr: float,
+                          num_epochs: int) -> EncoderClassifier:
     """
     Train a content encoder as a classifier to predict the same labels as a discrete hubert model.
 
@@ -200,14 +213,20 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, l
     return wrapped_content_encoder
 
 
-def compute_content_encoder_accuracy(wrapped_content_encoder: nn.Module, hubert_model: nn.Module):
+def compute_content_encoder_accuracy(encoder_classifier: EncoderClassifier, hubert_model: nn.Module):
+    """
+    Computes the accuracy of the wrapped content encoder as a classifier.
+    :param encoder_classifier: A EncoderClassifier model to compute its accuracy.
+    :param hubert_model: A pretrained hubert model for labels creation.
+    :return: The accuracy of the wrapped content encoder.
+    """
     correct = 0
     total = 0
     with torch.no_grad():
         dataset = load_dataset(DATASET_PATH, "clean", split=TEST_SPLIT, streaming=True)
         for batch in batch_generator(dataset, BATCH_SIZE):
             labels = get_batch_labels(hubert_model, batch)
-            outputs = wrapped_content_encoder(batch)
+            outputs = encoder_classifier(batch)
             outputs_flat = outputs.view(-1, NUM_CLASSES)
             labels_flat = labels.view(-1)
             _, predicted = torch.max(outputs_flat.data, 1)
@@ -269,6 +288,12 @@ def get_reconstruction_loss(orig_audio: torch.Tensor, generated_audio: torch.Ten
 
 
 def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
+    """
+    Trains a StreamVC model.
+
+    :param streamvc_model: The model to train.
+    :param args: Hyperparameters for training.
+    """
     # TODO consider passing the parameters one by one instead of passing args.
     streamvc_model.to(DEVICE)
     root = Path(args.save_path)
