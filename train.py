@@ -260,12 +260,13 @@ def get_reconstruction_loss(orig_audio: torch.Tensor, generated_audio: torch.Ten
     loss = torch.tensor(0.).to(DEVICE)
     for s_exp in range(6, 12):
         s = 2 ** s_exp
+        n_fft = 2 ** 11  # Should satisfy n_fft >= win_length && ((n_fft // 2) + 1) >= n_mels.
         window_size = s
         hop_length = int(s / 4)
         mel_spectrogram = MelSpectrogram(
             sample_rate=SAMPLE_RATE,
             win_length=window_size,
-            n_fft=window_size,
+            n_fft=n_fft,
             hop_length=hop_length,
             n_mels=MEL_BINS
         )
@@ -351,6 +352,8 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
             x_pred_t = netG(batch, batch)
             x_pred_t = x_pred_t.unsqueeze(1)
             batch = batch.unsqueeze(1)
+            x_pred_t = x_pred_t[..., 640:]
+            batch = batch[..., :x_pred_t.shape[-1]]
 
             #######################
             # Train Discriminator #
