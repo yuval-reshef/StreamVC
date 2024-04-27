@@ -145,7 +145,7 @@ def streamvc_encoder_example(batch: Optional[torch.Tensor] = None):
     # TODO: Delete function when we finish with the training script.
     if batch is None:
         batch = get_first_batch(BATCH_SIZE)
-    streamvc_model = StreamVC()
+    streamvc_model = StreamVC(SAMPLES_PER_FRAME)
     content_encoder = streamvc_model.content_encoder
     output = content_encoder(batch)
 
@@ -440,15 +440,15 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
 
 def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
     """Main function for training StreamVC model."""
-    streamvc = StreamVC().to(DEVICE)
+    streamvc = StreamVC(SAMPLES_PER_FRAME).to(DEVICE)
     # TODO consider adding an option to load content encoder instead of training.
-    content_encoder = streamvc.content_encoder
-    hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True) \
-        .to(DEVICE).eval()
-    wrapped_content_encoder = train_content_encoder(content_encoder, hubert_model, args.ce_lr, args.ce_epochs)
-    if show_accuracy:
-        compute_content_encoder_accuracy(wrapped_content_encoder, hubert_model)
-    # train_streamvc(streamvc, args)
+    # content_encoder = streamvc.content_encoder
+    # hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True) \
+    #     .to(DEVICE).eval()
+    # wrapped_content_encoder = train_content_encoder(content_encoder, hubert_model, args.ce_lr, args.ce_epochs)
+    # if show_accuracy:
+    #     compute_content_encoder_accuracy(wrapped_content_encoder, hubert_model)
+    train_streamvc(streamvc, args)
     # TODO: Train `streamvc_model`.
 
 

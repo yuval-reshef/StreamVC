@@ -9,14 +9,14 @@ from streamvc._utils import auto_batching
 
 
 class StreamVC(nn.Module):
-    def __init__(self):
+    def __init__(self, samples_per_frame: int):
         super().__init__()
         self.content_encoder = Encoder(scale=64, embedding_dim=64)
         self.speech_encoder = Encoder(scale=32, embedding_dim=64)
         self.speech_pooling = LearnablePooling(embedding_dim=64)
         self.decoder = Decoder(scale=40, embedding_dim=64, conditioning_dim=64)
         self.f0_estimator = F0Estimator(whitening=True)
-        self.energy_estimator = EnergyEstimator()
+        self.energy_estimator = EnergyEstimator(samples_per_frame)
 
     @auto_batching(('* t', '* t'), '* t')
     def forward(self, source_speech: torch.Tensor, target_speech: torch.Tensor) -> torch.Tensor:
