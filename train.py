@@ -11,7 +11,7 @@ from datasets.iterable_dataset import IterableDataset
 import torch
 import torch.nn as nn
 import torchaudio.transforms as T
-from typing import Optional
+from typing import Iterable, Optional
 import ssl
 import numpy as np
 import torch.optim as optim
@@ -27,6 +27,7 @@ import torch.nn.functional as F
 
 DATASET_SAMPLE_RATE = 24000
 SAMPLE_RATE = 16000
+SAMPLES_PER_FRAME = 320
 NUM_CLASSES = 100
 # TODO: Change batch size to 128 if we manage to run it faster.
 BATCH_SIZE = 4
@@ -67,22 +68,34 @@ def load_net(net, path, eval_mode: bool) -> None:
         net.eval()
 
 
-def concat_and_pad_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
+def concat_and_pad_tensors(tensors: Iterable[torch.Tensor], pad_to_divisible_by: int = 1) -> torch.Tensor:
     """
     Concatenate tensors with variable length by padding with zeros at the end.
     :param tensors: A list of 1 dimension tensors.
+    :param pad_to_divisible_by: Add additional padding to ensure that the last dimension of the output tensor is
+           divisible by this parameter.
     :return: A tensor of the concatenated input tensors padded with zeros at the end to match the length of the largest
              input tensor.
     Example:
       Input: list([1],
                   [2, 3],
-                  [4, 5, 6])
-      Output: torch.Tensor([[1, 0, 0],
-                            [2, 3, 0],
-                            [4, 5, 6]])
+                  [4, 5, 6]),
+             pad_to_divisible_by=2
+      Output: torch.Tensor([[1, 0, 0, 0],
+                            [2, 3, 0, 0],
+                            [4, 5, 6, 0]])
     """
-    max_len = max([tensor.shape[0] for tensor in tensors])
-    padded_vectors = [nn.functional.pad(vec, (0, max_len - vec.shape[0]), mode='constant', value=0) for vec in tensors]
+    max_len = max(tensor.shape[0] for tensor in tensors)
+    if pad_to_divisible_by is not None:
+        max_len = int(np.ceil(max_len / pad_to_divisible_by) * pad_to_divisible_by)
+    padded_vectors = [
+        nn.functional.pad(
+            vec,
+            (0, max_len - vec.shape[0]),
+            mode='constant', value=0
+        )
+        for vec in tensors
+    ]
     concatenated_vectors = torch.stack(padded_vectors, dim=0)
     return concatenated_vectors
 
@@ -107,7 +120,7 @@ def get_first_batch(batch_size: int) -> Optional[torch.Tensor]:
             samples.append(resampled_audio)
         except StopIteration:
             return None
-    return concat_and_pad_tensors(samples)
+    return concat_and_pad_tensors(samples, SAMPLES_PER_FRAME)
 
 
 def batch_generator(iterable_dataset: IterableDataset, batch_size: int) -> Optional[torch.Tensor]:
@@ -124,7 +137,7 @@ def batch_generator(iterable_dataset: IterableDataset, batch_size: int) -> Optio
         audios_data = batch["audio"]
         audio_waveforms = [resampler(torch.from_numpy(audio_data["array"].astype(np.float32))) for audio_data in
                            audios_data]
-        tensor_batch = concat_and_pad_tensors(audio_waveforms)
+        tensor_batch = concat_and_pad_tensors(audio_waveforms, SAMPLES_PER_FRAME)
         yield tensor_batch
 
 
@@ -352,7 +365,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
             x_pred_t = netG(batch, batch)
             x_pred_t = x_pred_t.unsqueeze(1)
             batch = batch.unsqueeze(1)
-            x_pred_t = x_pred_t[..., 640:]
+            x_pred_t = x_pred_t[..., SAMPLES_PER_FRAME * 2:]
             batch = batch[..., :x_pred_t.shape[-1]]
 
             #######################
@@ -429,13 +442,13 @@ def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
     """Main function for training StreamVC model."""
     streamvc = StreamVC().to(DEVICE)
     # TODO consider adding an option to load content encoder instead of training.
-    # content_encoder = streamvc.content_encoder
-    # hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True) \
-    #     .to(DEVICE).eval()
-    # wrapped_content_encoder = train_content_encoder(content_encoder, hubert_model, args.ce_lr, args.ce_epochs)
-    # if show_accuracy:
-    #     compute_content_encoder_accuracy(wrapped_content_encoder, hubert_model)
-    train_streamvc(streamvc, args)
+    content_encoder = streamvc.content_encoder
+    hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True) \
+        .to(DEVICE).eval()
+    wrapped_content_encoder = train_content_encoder(content_encoder, hubert_model, args.ce_lr, args.ce_epochs)
+    if show_accuracy:
+        compute_content_encoder_accuracy(wrapped_content_encoder, hubert_model)
+    # train_streamvc(streamvc, args)
     # TODO: Train `streamvc_model`.
 
 
