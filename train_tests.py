@@ -181,7 +181,7 @@ def main(args):
         "weight_decay": args.weight_decay,
         "gradient_accumulation_steps": accelerator.gradient_accumulation_steps
     }
-    print_time(f"{hps=}", flush=True)
+    print_time(f"{hps=}")
     accelerator.init_trackers(args.run_name, config=hps)
     streamvc = StreamVC(gradient_checkpointing=args.gradient_checkpointing)
     content_encoder = streamvc.content_encoder.train()
