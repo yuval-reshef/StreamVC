@@ -440,7 +440,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
 
 def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
     """Main function for training StreamVC model."""
-    streamvc = StreamVC(SAMPLES_PER_FRAME).to(DEVICE)
+    streamvc = StreamVC(SAMPLES_PER_FRAME, SAMPLE_RATE).to(DEVICE)
     # TODO consider adding an option to load content encoder instead of training.
     # content_encoder = streamvc.content_encoder
     # hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True) \

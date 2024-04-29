@@ -55,12 +55,18 @@ def estimate(
     cmdf = _diff(frames, tau_max)[..., tau_min:]
     tau = _search(cmdf, tau_max, threshold)
 
-    # convert the periods to frequencies (if periodic) and output
-    return torch.where(
+    # compute f0 by converting the periods to frequencies (if periodic).
+    f0_estimation = torch.where(
         tau > 0,
         sample_rate / (tau + tau_min + 1).type(signal.dtype),
         torch.tensor(0, device=tau.device).type(signal.dtype),
     )
+
+    # Compute the cumulative mean normalized difference value at the estimated period.
+    cmdf_at_tau = torch.gather(cmdf, -1, tau.unsqueeze(-1)).squeeze(-1)
+
+    output = torch.stack([f0_estimation, cmdf_at_tau], dim=-1)
+    return output
 
 
 def _frame(signal: torch.Tensor, frame_length: int, frame_stride: int) -> torch.Tensor:
@@ -115,31 +121,15 @@ class F0Estimator(nn.Module):
         self.sample_rate = sample_rate
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # TODO consider padding with the reflection on the left and on the real-cropped values on the right.
         x = F.pad(x, (self.frame_length, self.frame_length), "constant", 0)
-        return estimate(x, self.sample_rate, self.frame_length * 3, self.frame_length)
+        f0 = estimate(x, self.sample_rate, self.frame_length * 3, self.frame_length)
+
+        # TODO: Whitening.
+        return f0
 
 
 if __name__ == '__main__':
     x = torch.rand(4,1,320000)
     F0 = F0Estimator(16000, 320)
     print(F0.forward(x).shape)
-
-    # a = estimate(x, 320, threshold=0.01)
-    # unfold = torch.nn.Unfold(3, stride=2)
-    # x = torch.rand(4,1,320000)
-    # frame_len = 320
-    # print(x)
-    # x = F.pad(x, (frame_len, frame_len), "constant", 0)
-    # print(x)
-    # x = x.unfold(-1, frame_len * 3, frame_len)
-    # print(x.shape)
-    # x = estimate(x, 16000)
-    # print(x.shape)
-    # x = x.squeeze(-1)
-    # print(x.shape)
-
-
-    # print(x)
-    # print(x.unfold(-1, ))
-    # x = torch.unfold()
-    # print(a.shape)
