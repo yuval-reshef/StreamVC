@@ -44,6 +44,7 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 LAMBDA_ADV = 1
 LAMBDA_FEAT = 100
 LAMBDA_REC = 1
+YIN_THRESHOLDS = (0.05, 0.1, 0.15)
 
 
 def save_net(net: nn.Module, path: str) -> None:
@@ -440,7 +441,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
 
 def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
     """Main function for training StreamVC model."""
-    streamvc = StreamVC(SAMPLES_PER_FRAME, SAMPLE_RATE).to(DEVICE)
+    streamvc = StreamVC(SAMPLES_PER_FRAME, SAMPLE_RATE, yin_thresholds=YIN_THRESHOLDS).to(DEVICE)
     # TODO consider adding an option to load content encoder instead of training.
     # content_encoder = streamvc.content_encoder
     # hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete", trust_repo=True) \

@@ -10,7 +10,7 @@ def estimate(
     frame_length: int,
     frame_stride: int,
     pitch_max: float = 20000,
-    threshold: float = 0.1,
+    thresholds: tuple[float] = (0.05, 0.1, 0.15),
 ) -> torch.Tensor:
     """estimate the pitch (fundamental frequency) of a signal
 
@@ -53,19 +53,23 @@ def estimate(
     # compute the fundamental periods
     frames = _frame(signal, frame_length, frame_stride)
     cmdf = _diff(frames, tau_max)[..., tau_min:]
-    tau = _search(cmdf, tau_max, threshold)
 
-    # compute f0 by converting the periods to frequencies (if periodic).
-    f0_estimation = torch.where(
-        tau > 0,
-        sample_rate / (tau + tau_min + 1).type(signal.dtype),
-        torch.tensor(0, device=tau.device).type(signal.dtype),
-    )
+    outputs = []
+    for threshold in thresholds:
+        tau = _search(cmdf, tau_max, threshold)
+        # compute f0 by converting the periods to frequencies (if periodic).
+        f0_estimation = torch.where(
+            tau > 0,
+            sample_rate / (tau + tau_min + 1).type(signal.dtype),
+            torch.tensor(0, device=tau.device).type(signal.dtype),
+        )
+        outputs.append(f0_estimation)
+        # Compute the cumulative mean normalized difference value at the estimated period.
+        cmdf_at_tau = torch.gather(cmdf, -1, tau.unsqueeze(-1)).squeeze(-1)
+        outputs.append(cmdf_at_tau)
 
-    # Compute the cumulative mean normalized difference value at the estimated period.
-    cmdf_at_tau = torch.gather(cmdf, -1, tau.unsqueeze(-1)).squeeze(-1)
-
-    output = torch.stack([f0_estimation, cmdf_at_tau], dim=-1)
+    output = torch.stack(outputs, dim=-1)
+    print(f"{output.shape=}")
     return output
 
 
@@ -114,16 +118,18 @@ def _search(cmdf: torch.Tensor, tau_max: int, threshold: float) -> torch.Tensor:
 
 
 class F0Estimator(nn.Module):
-    def __init__(self, sample_rate: int, frame_length: int, whitening: bool = True):
+    def __init__(self, sample_rate: int, frame_length: int, yin_thresholds: tuple[float] = (0.05, 0.1, 0.15),
+                 whitening: bool = True):
         super().__init__()
-        self.frame_length = frame_length
-        self.whitening = whitening
         self.sample_rate = sample_rate
+        self.frame_length = frame_length
+        self.yin_thresholds = yin_thresholds
+        self.whitening = whitening
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # TODO consider padding with the reflection on the left and on the real-cropped values on the right.
         x = F.pad(x, (self.frame_length, self.frame_length), "constant", 0)
-        f0 = estimate(x, self.sample_rate, self.frame_length * 3, self.frame_length)
+        f0 = estimate(x, self.sample_rate, self.frame_length * 3, self.frame_length, thresholds=self.yin_thresholds)
 
         # TODO: Whitening.
         return f0
@@ -131,5 +137,6 @@ class F0Estimator(nn.Module):
 
 if __name__ == '__main__':
     x = torch.rand(4,1,320000)
+    print(f"{x.shape=}")
     F0 = F0Estimator(16000, 320)
-    print(F0.forward(x).shape)
+    F0.forward(x)
