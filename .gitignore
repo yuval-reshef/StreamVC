@@ -162,3 +162,4 @@ cython_debug/
 # Output files
 .out
 out/
+logs/

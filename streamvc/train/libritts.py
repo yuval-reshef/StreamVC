@@ -1,6 +1,4 @@
-from typing import Iterable
-
-import numpy as np
+from math import ceil
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 import torch
@@ -11,12 +9,14 @@ DATASET_PATH = "blabble-io/libritts"
 SAMPLE_RATE = 16000
 
 
-def get_libritts_dataloader(split,  batch_size, num_workers=0) -> DataLoader:
+def get_libritts_dataloader(split,  batch_size, num_workers=0, limit_samples=None) -> DataLoader:
     """
     Get a dataloader for the LibriTTS dataset.
     :param split: The split of the dataset to load.
     :param batch_size: The batch size.
     :param num_workers: The number of workers to use for data loading.
+    :param limit_samples: The number of samples in a batch (length of audio)
+        with padding.
     :return: A pytorch dataloader for the LibriTTS dataset.
     """
     dataset = load_dataset(DATASET_PATH, "all", split=split, streaming=True)
@@ -27,13 +27,21 @@ def get_libritts_dataloader(split,  batch_size, num_workers=0) -> DataLoader:
         dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        collate_fn=lambda s: concat_and_pad_tensors(
-            [x['audio']['array'] for x in s])
+        collate_fn=lambda samples: concat_and_pad_tensors([
+            cap(sample['audio']['array'], limit_samples)
+            for sample in samples])
     )
     return dataloader
 
 
-def concat_and_pad_tensors(tensors: Iterable[torch.Tensor], pad_to_divisible_by: int = 1) -> torch.Tensor:
+def cap(x: torch.Tensor, max_len: int) -> torch.Tensor:
+    if (max_len is None) or (x.shape[0] <= max_len):
+        return x
+    else:
+        return x[:max_len]
+
+
+def concat_and_pad_tensors(tensors: list[torch.Tensor], pad_to_divisible_by: int = 1) -> torch.Tensor:
     """
     Concatenate tensors with variable length by padding with zeros at the end.
     :param tensors: A list of 1 dimension tensors.
@@ -52,7 +60,8 @@ def concat_and_pad_tensors(tensors: Iterable[torch.Tensor], pad_to_divisible_by:
     """
     max_len = max(tensor.shape[0] for tensor in tensors)
     if pad_to_divisible_by is not None:
-        max_len = int(np.ceil(max_len / pad_to_divisible_by) * pad_to_divisible_by)
+        max_len = int(ceil(max_len / pad_to_divisible_by)
+                      * pad_to_divisible_by)
     padded_vectors = [
         nn.functional.pad(
             vec,
