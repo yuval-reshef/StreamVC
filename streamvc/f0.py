@@ -14,35 +14,21 @@ def estimate(
     thresholds: Iterable[float] = (0.05, 0.1, 0.15),
     whitening: bool = True
 ) -> torch.Tensor:
-    """estimate the pitch (fundamental frequency) of a signal
+    """Estimates the pitch (fundamental frequency) of a signal.
 
-    This function attempts to determine the pitch of a signal via the
-    Yin algorithm. Accuracy can be improved by sampling the signal at a
-    higher rate, especially for higher-frequency pitches, and by narrowing
-    the values of pitch_min and pitch_max. For example, good values for
-    speech signals are pitch_min=60 and pitch_max=500. frame_stride can also
-    be tuned to the expected minimum rate of pitch change of the signal:
-    10ms is commonly used for speech.
-
-    The speed and memory usage of the algorithm are also determined by the
-    pitch_min parameter, which is used to window the audio signal into
-    2*sample_rate/pitch_min sliding windows. A higher pitch_min corresponds to
-    less memory usage and faster running time.
-
-    Args:
-        signal: the signal vector (1D) or [batch, time] tensor to analyze
-        sample_rate: sample rate, in Hz, of the signal
-        pitch_min: expected lower bound of the pitch
-        pitch_max: expected upper bound of the pitch
-        frame_stride: overlapping window stride, in seconds, which determines
-            the number of pitch values returned
-        threshold: harmonic threshold value (see paper)
-
-    Returns:
-        pitch: PyTorch tensor of pitch estimations, one for each frame of
-            the windowed signal, an entry of 0 corresponds to a non-periodic
-            frame, where no periodic signal was detected
-
+    :param signal: the signal vector (1D) or [..., time] tensor to analyze.
+    :param sample_rate: sample rate, in Hz, of the signal.
+    :param frame_length: number of samples per frame.
+    :param frame_stride: overlapping window stride (number of samples), which determines the number of pitch values
+                         returned
+    :param pitch_max: expected upper bound of the pitch
+    :param thresholds: A list of harmonic threshold values (see paper)
+    :param whitening: Whether to apply whitening on the estimated period per utterance.
+    :return: PyTorch tensor of shape [..., number_of_frames, number_of_thresholds * 3] as for each utterance, for each
+      frame in the utterance, and for each threshold, we compute 3 things:
+      1. The estimated pitch or 0 for aperiodic frames (and if whitening is true, it is normalized).
+      2. Unvoiced predicate (1 for frames with an estimated pitch and 0 for aperiodic frames.
+      3. The cumulative mean normalized difference value at the estimated period.
     """
 
     signal = torch.as_tensor(signal)
