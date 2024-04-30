@@ -72,10 +72,8 @@ def estimate(
             std = f0_estimation.std(dim=-1, keepdim=True)
             std_safe = torch.where(std > 0, std, torch.tensor(1e-8).to(std.device))
             f0_estimation = (f0_estimation - mean) / std_safe
-            print(f0_estimation)
 
         outputs.append(f0_estimation)
-        print(f"{f0_estimation.shape=}")
 
         # Compute the unvoiced signal predicate.
         unvoiced_predicate = torch.where(
@@ -90,7 +88,6 @@ def estimate(
         outputs.append(cmdf_at_tau)
 
     output = torch.stack(outputs, dim=-1)
-    print(f"{output.shape=}")
     return output
 
 
