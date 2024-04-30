@@ -9,8 +9,7 @@ from streamvc._utils import auto_batching
 
 
 class StreamVC(nn.Module):
-    def __init__(self, sample_rate: int = 16_000, gradient_checkpointing: bool = False,
-                 yin_thresholds: tuple[float] = (0.05, 0.1, 0.15)):
+    def __init__(self, sample_rate: int = 16_000, gradient_checkpointing: bool = False):
         super().__init__()
         self.content_encoder = Encoder(scale=64, embedding_dim=64,
                                        gradient_checkpointing=gradient_checkpointing)
@@ -19,8 +18,8 @@ class StreamVC(nn.Module):
         self.speech_pooling = LearnablePooling(embedding_dim=64)
         self.decoder = Decoder(scale=40, embedding_dim=64, conditioning_dim=64,
                                gradient_checkpointing=gradient_checkpointing)
-        self.f0_estimator = F0Estimator(
-            sample_rate, frame_length=320, whitening=True)
+        self.f0_estimator = F0Estimator(sample_rate=sample_rate, frame_length_ms=20,
+                                        yin_thresholds=(0.05, 0.1, 1.5), whitening=True)
         self.energy_estimator = EnergyEstimator(samples_per_frame=320)
 
     @auto_batching(('* t', '* t'), '* t')

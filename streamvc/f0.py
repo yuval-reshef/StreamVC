@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import typing as T
+from typing import Iterable
 import numpy as np
+
 
 def estimate(
     signal: torch.Tensor,
@@ -10,7 +11,7 @@ def estimate(
     frame_length: int,
     frame_stride: int,
     pitch_max: float = 20000,
-    thresholds: tuple[float] = (0.05, 0.1, 0.15),
+    thresholds: Iterable[float] = (0.05, 0.1, 0.15),
     whitening: bool = True
 ) -> torch.Tensor:
     """estimate the pitch (fundamental frequency) of a signal
@@ -72,7 +73,6 @@ def estimate(
             std_safe = torch.where(std > 0, std, torch.tensor(1e-8).to(std.device))
             f0_estimation = (f0_estimation - mean) / std_safe
             print(f0_estimation)
-
 
         outputs.append(f0_estimation)
         print(f"{f0_estimation.shape=}")
@@ -139,26 +139,24 @@ def _search(cmdf: torch.Tensor, tau_max: int, threshold: float) -> torch.Tensor:
 
 
 class F0Estimator(nn.Module):
-    def __init__(self, sample_rate: int, frame_length: int, yin_thresholds: tuple[float] = (0.05, 0.1, 0.15),
-                 whitening: bool = True):
+    def __init__(self, sample_rate: int = 16_000, frame_length_ms: int = 20,
+                 yin_thresholds: Iterable[float] = (0.05, 0.1, 0.15), whitening: bool = True):
         super().__init__()
         self.sample_rate = sample_rate
-        self.frame_length = frame_length
+        self.samples_per_frame = int(self.sample_rate // (1 / frame_length_ms * 1000))
         self.yin_thresholds = yin_thresholds
         self.whitening = whitening
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.pad(x, (self.frame_length, self.frame_length), "constant", 0)
-        f0 = estimate(x, self.sample_rate, self.frame_length * 3, self.frame_length, thresholds=self.yin_thresholds,
-                      whitening=self.whitening,
+        x = F.pad(x, (self.samples_per_frame, self.samples_per_frame), "constant", 0)
+        f0 = estimate(x, self.sample_rate, self.samples_per_frame * 3, self.samples_per_frame,
+                      thresholds=self.yin_thresholds, whitening=self.whitening,
                       )
-
-        # TODO: Whitening.
         return f0
 
 
 if __name__ == '__main__':
     x = torch.rand(4, 320003)
     print(f"{x.shape=}")
-    F0 = F0Estimator(16000, 320)
+    F0 = F0Estimator(16000, 20)
     F0.forward(x)
