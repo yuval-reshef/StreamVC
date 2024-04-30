@@ -64,6 +64,12 @@ def estimate(
             torch.tensor(0, device=tau.device).type(signal.dtype),
         )
         outputs.append(f0_estimation)
+        unvoiced_predicate = torch.where(
+            tau > 0,
+            torch.tensor(1, device=tau.device).type(signal.dtype),
+            torch.tensor(0, device=tau.device).type(signal.dtype),
+        )
+        outputs.append(unvoiced_predicate)
         # Compute the cumulative mean normalized difference value at the estimated period.
         cmdf_at_tau = torch.gather(cmdf, -1, tau.unsqueeze(-1)).squeeze(-1)
         outputs.append(cmdf_at_tau)
@@ -127,7 +133,6 @@ class F0Estimator(nn.Module):
         self.whitening = whitening
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # TODO consider padding with the reflection on the left and on the real-cropped values on the right.
         x = F.pad(x, (self.frame_length, self.frame_length), "constant", 0)
         f0 = estimate(x, self.sample_rate, self.frame_length * 3, self.frame_length, thresholds=self.yin_thresholds)
 
@@ -136,7 +141,7 @@ class F0Estimator(nn.Module):
 
 
 if __name__ == '__main__':
-    x = torch.rand(4,1,320000)
+    x = torch.rand(4, 320003)
     print(f"{x.shape=}")
     F0 = F0Estimator(16000, 320)
     F0.forward(x)
