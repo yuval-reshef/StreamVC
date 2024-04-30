@@ -20,15 +20,6 @@ class LearnablePooling(nn.Module):
         return torch.einsum('b f e, b f -> b e', x, weights)
 
 
-class Residual(nn.Module):
-    def __init__(self, fn: nn.Module):
-        super().__init__()
-        self.fn = fn
-
-    def forward(self, x: torch.Tensor, *args, **kwargs):
-        return self.fn(x, *args, **kwargs) + x
-
-
 class CausalConv1d(nn.Conv1d):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int,
                  stride: int = 1, dilation: int = 1,
