@@ -11,6 +11,7 @@ def estimate(
     frame_stride: int,
     pitch_max: float = 20000,
     thresholds: tuple[float] = (0.05, 0.1, 0.15),
+    whitening: bool = True
 ) -> torch.Tensor:
     """estimate the pitch (fundamental frequency) of a signal
 
@@ -57,19 +58,33 @@ def estimate(
     outputs = []
     for threshold in thresholds:
         tau = _search(cmdf, tau_max, threshold)
+
         # compute f0 by converting the periods to frequencies (if periodic).
         f0_estimation = torch.where(
             tau > 0,
             sample_rate / (tau + tau_min + 1).type(signal.dtype),
             torch.tensor(0, device=tau.device).type(signal.dtype),
         )
+        if whitening:
+            # Normalize each row by subtracting mean and dividing by std
+            mean = f0_estimation.mean(dim=-1, keepdim=True)
+            std = f0_estimation.std(dim=-1, keepdim=True)
+            std_safe = torch.where(std > 0, std, torch.tensor(1e-8).to(std.device))
+            f0_estimation = (f0_estimation - mean) / std_safe
+            print(f0_estimation)
+
+
         outputs.append(f0_estimation)
+        print(f"{f0_estimation.shape=}")
+
+        # Compute the unvoiced signal predicate.
         unvoiced_predicate = torch.where(
             tau > 0,
             torch.tensor(1, device=tau.device).type(signal.dtype),
             torch.tensor(0, device=tau.device).type(signal.dtype),
         )
         outputs.append(unvoiced_predicate)
+
         # Compute the cumulative mean normalized difference value at the estimated period.
         cmdf_at_tau = torch.gather(cmdf, -1, tau.unsqueeze(-1)).squeeze(-1)
         outputs.append(cmdf_at_tau)
@@ -134,7 +149,9 @@ class F0Estimator(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.pad(x, (self.frame_length, self.frame_length), "constant", 0)
-        f0 = estimate(x, self.sample_rate, self.frame_length * 3, self.frame_length, thresholds=self.yin_thresholds)
+        f0 = estimate(x, self.sample_rate, self.frame_length * 3, self.frame_length, thresholds=self.yin_thresholds,
+                      whitening=self.whitening,
+                      )
 
         # TODO: Whitening.
         return f0
