@@ -59,6 +59,7 @@ def concat_and_pad_tensors(tensors: list[torch.Tensor], pad_to_divisible_by: int
                             [4, 5, 6, 0]])
     """
     max_len = max(tensor.shape[0] for tensor in tensors)
+    # TODO: Consider removing this part of making the tensor divisible by the given parameter.
     if pad_to_divisible_by is not None:
         max_len = int(ceil(max_len / pad_to_divisible_by)
                       * pad_to_divisible_by)

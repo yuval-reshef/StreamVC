@@ -12,16 +12,17 @@ class EnergyEstimator(nn.Module):
 
     def reshape_to_frames(self, tensor):
         """
-        Reshapes the tensor from dimension [..., x] to [..., x / samples_per_frame, samples_per_frame].
+        Reshapes the tensor from dimension [..., x] to [..., x // samples_per_frame, samples_per_frame].
         :param tensor: Input tensor to reshape.
         :return: Reshaped tensor with the specified frame structure.
         """
+        # Remove any samples at the end that don't fill a whole frame.
+        tensor = tensor[..., :tensor.shape[-1] // self.samples_per_frame * self.samples_per_frame]
+        # Reshape the tensor.
         original_shape = tensor.size()
         new_shape = (*original_shape[:-1], original_shape[-1] // self.samples_per_frame, self.samples_per_frame)
-        reshaped_tensor = tensor.view(*new_shape)
-        return reshaped_tensor
+        return tensor.view(*new_shape)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        assert x.size(-1) % self.samples_per_frame == 0
         reshaped_tensor = self.reshape_to_frames(x)
         return torch.var(reshaped_tensor, dim=-1)

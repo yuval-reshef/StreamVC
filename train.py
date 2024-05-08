@@ -121,7 +121,7 @@ def get_first_batch(batch_size: int) -> Optional[torch.Tensor]:
             samples.append(resampled_audio)
         except StopIteration:
             return None
-    return concat_and_pad_tensors(samples, SAMPLES_PER_FRAME)
+    return concat_and_pad_tensors(samples, 1)
 
 
 def batch_generator(iterable_dataset: IterableDataset, batch_size: int) -> Optional[torch.Tensor]:

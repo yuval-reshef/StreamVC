@@ -16,7 +16,9 @@ accelerator = Accelerator(log_with="tensorboard",
                           project_config=ProjectConfiguration(
                               project_dir=os.getcwd(),
                               logging_dir=os.path.join(os.getcwd(), "logs"),))
+# TODO: shouldn't we set it to True only if the input size is constant?
 torch.backends.cudnn.benchmark = True
+# TODO: isn't it enabled by default?
 torch.backends.cudnn.enabled = True
 
 NUM_CLASSES = 100
