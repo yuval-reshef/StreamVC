@@ -6,9 +6,9 @@ class EnergyEstimator(nn.Module):
     """
     Calculates the energy estimator for each frame measured by sample variance.
     """
-    def __init__(self, samples_per_frame: int):
+    def __init__(self, sample_rate: int, frame_length_ms: int):
         super().__init__()
-        self.samples_per_frame = samples_per_frame
+        self.samples_per_frame = int(sample_rate // (1 / frame_length_ms * 1000))
 
     def reshape_to_frames(self, tensor):
         """

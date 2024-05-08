@@ -31,8 +31,6 @@ def estimate(
       3. The cumulative mean normalized difference value at the estimated period.
     """
 
-    signal = torch.as_tensor(signal)
-
     # convert frequencies to samples, ensure windows can fit 2 whole periods
     tau_min = int(sample_rate / pitch_max)
     tau_max = int(frame_length / 2)
@@ -132,7 +130,7 @@ class F0Estimator(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.pad(x, (self.samples_per_frame, self.samples_per_frame), "constant", 0)
-        f0 = estimate(x, self.sample_rate, self.samples_per_frame * 3, self.samples_per_frame,
+        f0 = estimate(x, self.sample_rate, frame_length=self.samples_per_frame * 3, frame_stride=self.samples_per_frame,
                       thresholds=self.yin_thresholds, whitening=self.whitening,
                       )
         return f0
@@ -142,4 +140,5 @@ if __name__ == '__main__':
     x = torch.rand(4, 320003)
     print(f"{x.shape=}")
     F0 = F0Estimator(16000, 20)
-    F0.forward(x)
+    out = F0.forward(x)
+    print(f"{out.shape=}")

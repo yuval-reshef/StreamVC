@@ -1,3 +1,4 @@
+# %%
 """ StreamVC training script.
 TODO: Complete after we decide where we keep the output model.
 
@@ -452,7 +453,11 @@ def main(args: argparse.Namespace, show_accuracy: bool = True) -> None:
     train_streamvc(streamvc, args)
     # TODO: Train `streamvc_model`.
 
+batch = get_first_batch(4)
+model = StreamVC()
+model(batch, batch)
 
+# %%
 if __name__ == '__main__':
     ssl._create_default_https_context = ssl._create_unverified_context
     # TODO: Consider making some of the arguments constants.
