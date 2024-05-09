@@ -41,28 +41,21 @@ def cap(x: torch.Tensor, max_len: int) -> torch.Tensor:
         return x[:max_len]
 
 
-def concat_and_pad_tensors(tensors: list[torch.Tensor], pad_to_divisible_by: int = 1) -> torch.Tensor:
+def concat_and_pad_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
     """
     Concatenate tensors with variable length by padding with zeros at the end.
     :param tensors: A list of 1 dimension tensors.
-    :param pad_to_divisible_by: Add additional padding to ensure that the last dimension of the output tensor is
-           divisible by this parameter.
     :return: A tensor of the concatenated input tensors padded with zeros at the end to match the length of the largest
              input tensor.
     Example:
       Input: list([1],
                   [2, 3],
-                  [4, 5, 6]),
-             pad_to_divisible_by=2
-      Output: torch.Tensor([[1, 0, 0, 0],
-                            [2, 3, 0, 0],
-                            [4, 5, 6, 0]])
+                  [4, 5, 6])
+      Output: torch.Tensor([[1, 0, 0],
+                            [2, 3, 0],
+                            [4, 5, 6]])
     """
     max_len = max(tensor.shape[0] for tensor in tensors)
-    # TODO: Consider removing this part of making the tensor divisible by the given parameter.
-    if pad_to_divisible_by is not None:
-        max_len = int(ceil(max_len / pad_to_divisible_by)
-                      * pad_to_divisible_by)
     padded_vectors = [
         nn.functional.pad(
             vec,

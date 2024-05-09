@@ -66,22 +66,22 @@ class NLayerDiscriminator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, num_D, ndf, n_layers, downsampling_factor):
+    def __init__(self, n_blocks=3, n_features=16, n_layers=4, downsampling_factor=4):
         super().__init__()
-        self.model = nn.ModuleDict()
-        for i in range(num_D):
-            self.model[f"D_{i}"] = NLayerDiscriminator(
-                ndf, n_layers, downsampling_factor
-            )
+        self.model = nn.ModuleList()
+        for i in range(n_blocks):
+            self.model.append(NLayerDiscriminator(
+                n_features, n_layers, downsampling_factor
+            ))
 
-        self.downsample = nn.AvgPool1d(4, stride=2, padding=1, count_include_pad=False)
+        self.downsample = nn.AvgPool1d(
+            4, stride=2, padding=1, count_include_pad=False)
         # TODO remove this as it does nothing in this case?
         self.apply(weights_init)
 
     def forward(self, x):
         results = []
-        # From python 3.7 dictionaries are ordered
-        for key, D in self.model.items():
+        for D in self.model:
             results.append(D(x))
             x = self.downsample(x)
         return results
