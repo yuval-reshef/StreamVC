@@ -67,6 +67,13 @@ def print_cuda_memory(s):
         + f" - {s}")
 
 
+def get_optimizer(name, **args):
+    if name == "Adam":
+        return torch.optim.Adam(**args)
+    if name == "AdamW":
+        return torch.optim.AdamW(**args)
+
+
 @torch.no_grad()
 def get_batch_labels(hubert_model: nn.Module, batch: torch.Tensor) -> torch.Tensor:
     """
@@ -97,12 +104,12 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
     wrapped_content_encoder = EncoderClassifier(
         content_encoder, EMBEDDING_DIMS, NUM_CLASSES).train()
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(
-        wrapped_content_encoder.parameters(),
+    optimizer = get_optimizer(
+        args.optimizer,
+        params=wrapped_content_encoder.parameters(),
         lr=args.lr,
         betas=args.betas,
-        eps=args.eps,
-        weight_decay=args.weight_decay,
+        weight_decay=args.weight_decay
     )
     dataloader = get_libritts_dataloader(
         TRAIN_SPLIT, args.batch_size, limit_samples=args.limit_batch_samples)
@@ -165,7 +172,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                         wrapped_content_encoder, hubert_model, dev=True)
                     accelerator.log(
                         {
-                            "accuracy/content_encoder": accuracy.item()
+                            "accuracy/content_encoder": accuracy
                         },
                         step=epoch*step+step)
                     print_time(f"accuracy: {accuracy:.2f}%")
@@ -181,9 +188,9 @@ def compute_content_encoder_accuracy(wrapped_content_encoder: nn.Module, hubert_
     correct = 0
     total = 0
     if dev:
-        dataloader = islice(get_libritts_dataloader(DEV_SPLIT, 64), 200)
+        dataloader = islice(get_libritts_dataloader(DEV_SPLIT, 16), 100)
     else:
-        dataloader = get_libritts_dataloader(TEST_SPLIT, 64)
+        dataloader = get_libritts_dataloader(TEST_SPLIT, 16)
     wrapped_content_encoder.to(accelerator.device).eval()
     for batch in dataloader:
         batch = batch.to(accelerator.device)
@@ -194,7 +201,6 @@ def compute_content_encoder_accuracy(wrapped_content_encoder: nn.Module, hubert_
         _, predicted = torch.max(outputs_flat.data, 1)
         total += labels_flat.size(0)
         correct += (predicted == labels_flat).sum().item()
-
     wrapped_content_encoder.to(accelerator.device).train()
 
     return 100 * correct / total
@@ -210,17 +216,24 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     #######################
     # Load PyTorch Models #
     #######################
-    # TODO: When we finish implementing StreamVC, replace AdditiveModule with streamvc.
     generator = streamvc_model
     discriminator = Discriminator()
 
     #####################
     # Create optimizers #
     #####################
-    optimizer_generator = torch.optim.Adam(
-        generator.parameters(), lr=1e-4, betas=(0.5, 0.9))
-    optimizer_discriminator = torch.optim.Adam(
-        discriminator.parameters(), lr=1e-4, betas=(0.5, 0.9))
+    optimizer_generator = get_optimizer(
+        args.optimizer,
+        params=generator.parameters(),
+        lr=args.lr,
+        betas=args.betas,
+        weight_decay=args.weight_decay)
+    optimizer_discriminator = get_optimizer(
+        args.optimizer,
+        params=discriminator.parameters(),
+        lr=args.lr,
+        betas=args.betas,
+        weight_decay=args.weight_decay)
 
     dataloader = get_libritts_dataloader(
         TRAIN_SPLIT, args.batch_size, limit_samples=args.limit_batch_samples)
@@ -250,12 +263,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
         discriminator_loss_fn,
         feature_loss_fn,
         reconstruction_loss_fn
-
     )
-
-    ##########################
-    # Dumping original audio #
-    ##########################
 
     costs = []
     for epoch in range(0, args.num_epochs):
@@ -263,8 +271,8 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
         for step, batch in enumerate(islice(dataloader, args.limit_num_batches)):
             with accelerator.accumulate(generator, discriminator):
                 x_pred_t = generator(batch, batch)
-                x_pred_t = x_pred_t.unsqueeze(1)
-                batch = batch.unsqueeze(1)
+                # x_pred_t = x_pred_t.unsqueeze(1)
+                # batch = batch.unsqueeze(1)
                 # Remove the first 2 frames from the generated audio
                 # because we match a output frame t with input frame t-2.
                 x_pred_t = x_pred_t[..., SAMPLES_PER_FRAME * 2:]
@@ -306,42 +314,45 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                 optimizer_discriminator.step()
                 optimizer_generator.step()
 
-                ######################
-                # Update tensorboard #
-                ######################
-                costs.append([discriminator_loss.item(),
-                              adversarial_loss.item(), feature_loss.item()])
+            ######################
+            # Update tensorboard #
+            ######################
+            costs.append([
+                discriminator_loss.item(),
+                adversarial_loss.item(),
+                feature_loss.item(),
+                reconstruction_loss.item()
+            ])
 
-                accelerator.log(
-                    {
-                        "loss/discriminator": discriminator_loss.item(),
-                        "loss/adversarial": adversarial_loss.item(),
-                        "loss/feature_matching": feature_loss.item(),
-                        "loss/reconstruction": reconstruction_loss.item(),
-                        "allocated_memory": torch.cuda.max_memory_allocated()
-                        if accelerator.device.type == "cuda"
-                        else 0
-                    },
-                    step=epoch*step+step)
+            accelerator.log(
+                {
+                    "loss/discriminator": discriminator_loss.item(),
+                    "loss/adversarial": adversarial_loss.item(),
+                    "loss/feature_matching": feature_loss.item(),
+                    "loss/reconstruction": reconstruction_loss.item(),
+                    "allocated_memory": torch.cuda.max_memory_allocated()
+                    if accelerator.device.type == "cuda"
+                    else 0
+                },
+                step=epoch*step+step)
 
-                # TODO save checkpoint.
-                if (step + 1) % args.log_interval == 0:
-                    print_time(
-                        f'[{epoch}, {step:5}] loss: {torch.tensor(costs).mean().item():.4}')
-                    costs = []
-                if (step + 1) % args.model_checkpoint_interval == 0:
-                    accelerator.save_model(
-                        generator,
-                        save_directory=os.path.join(
-                            args.checkpoint_path,
-                            f"{args.run_name}_generator_{epoch}_{step}"
-                        ))
-                    accelerator.save_model(
-                        discriminator,
-                        save_directory=os.path.join(
-                            args.checkpoint_path,
-                            f"{args.run_name}_discriminator_{epoch}_{step}"
-                        ))
+            if (step + 1) % args.log_interval == 0:
+                print_time(
+                    f'[{epoch}, {step:5}] loss: {torch.tensor(costs).mean().item():.4}')
+                costs = []
+            if (step + 1) % args.model_checkpoint_interval == 0:
+                accelerator.save_model(
+                    generator,
+                    save_directory=os.path.join(
+                        args.checkpoint_path,
+                        f"{args.run_name}_generator_{epoch}_{step}"
+                    ))
+                accelerator.save_model(
+                    discriminator,
+                    save_directory=os.path.join(
+                        args.checkpoint_path,
+                        f"{args.run_name}_discriminator_{epoch}_{step}"
+                    ))
             if accelerator.device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats()
 
@@ -358,9 +369,9 @@ def main(args):
         "lr": args.lr,
         "beta0": args.betas[0],
         "beta1": args.betas[1],
-        "eps": args.eps,
         "weight_decay": args.weight_decay,
-        "gradient_accumulation_steps": accelerator.gradient_accumulation_steps
+        "gradient_accumulation_steps": accelerator.gradient_accumulation_steps,
+        "optimizer": args.optimizer
     }
     print_time(f"{hps=}")
     accelerator.init_trackers(args.run_name, config=hps)
@@ -396,8 +407,7 @@ if __name__ == '__main__':
                         default=os.path.join(
                             os.environ.get("HF_HOME", os.getcwd()),
                             "checkpoints"))
-    parser.add_argument("--betas", type=float, nargs=2, default=(0.9, 0.98))
-    parser.add_argument("--eps", type=float, default=1e-06)
+    parser.add_argument("--betas", type=float, nargs=2, default=(0.5, 0.9))
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--no-gradient-checkpointing",
                         action="store_false", dest='gradient_checkpointing',
@@ -411,6 +421,8 @@ if __name__ == '__main__':
     parser.add_argument("--module-to-train", type=str,
                         choices=["content-encoder", "decoder-and-speaker", "all"], required=True)
     parser.add_argument("--accuracy-interval", type=int, default=100)
+    parser.add_argument("--optimizer", type=str,
+                        default="AdamW", choices=["Adam", "AdamW"])
 
     args = parser.parse_args()
 
