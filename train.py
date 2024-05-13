@@ -19,10 +19,10 @@ accelerator = Accelerator(log_with="tensorboard",
                               project_dir=os.getcwd(),
                               logging_dir=os.path.join(os.getcwd(), "logs")),
                           dataloader_config=DataLoaderConfiguration(split_batches=True))
-# TODO: shouldn't we set it to True only if the input size is constant?
+# TODO: shouldn't we set it to True only if the input size is constant? - it errors without it
 torch.backends.cudnn.benchmark = True
-# TODO: isn't it enabled by default?
-torch.backends.cudnn.enabled = True
+# TODO: isn't it enabled by default? we probably don't
+# torch.backends.cudnn.enabled = True
 
 NUM_CLASSES = 100
 EMBEDDING_DIMS = 64
@@ -143,6 +143,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                         else 0
                     },
                     step=epoch*step+step)
+                costs.append(loss.item())
 
             # print loss
             if (step + 1) % args.log_interval == 0:
@@ -167,6 +168,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                             "accuracy/content_encoder": accuracy.item()
                         },
                         step=epoch*step+step)
+                    print_time(f"accuracy: {accuracy:.2f}%")
 
             if accelerator.device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats()
@@ -174,14 +176,14 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
     return wrapped_content_encoder
 
 
-@ torch.no_grad()
+@torch.no_grad()
 def compute_content_encoder_accuracy(wrapped_content_encoder: nn.Module, hubert_model: nn.Module, dev=False):
     correct = 0
     total = 0
     if dev:
-        dataloader = islice(get_libritts_dataloader(DEV_SPLIT, 128), 100)
+        dataloader = islice(get_libritts_dataloader(DEV_SPLIT, 64), 200)
     else:
-        dataloader = get_libritts_dataloader(TEST_SPLIT, 128)
+        dataloader = get_libritts_dataloader(TEST_SPLIT, 64)
     wrapped_content_encoder.to(accelerator.device).eval()
     for batch in dataloader:
         batch = batch.to(accelerator.device)
@@ -363,15 +365,16 @@ def main(args):
     print_time(f"{hps=}")
     accelerator.init_trackers(args.run_name, config=hps)
     streamvc = StreamVC(
-        gradient_checkpointing=args.gradient_checkpointing).train()
+        gradient_checkpointing=args.gradient_checkpointing)
     if args.module_to_train in ["content-encoder", "all"]:
         content_encoder = streamvc.content_encoder
         hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete",
                                       trust_repo=True).to(torch.float32).eval()
         wrapped_content_encoder = train_content_encoder(
             content_encoder, hubert_model, args)
-        compute_content_encoder_accuracy(
+        accuracy = compute_content_encoder_accuracy(
             wrapped_content_encoder, hubert_model, args)
+        print_time(f"{accuracy=}")
     # else:
         # TODO: load content encoder checkpoint
 
