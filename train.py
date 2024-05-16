@@ -222,7 +222,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     # Load PyTorch Models #
     #######################
     generator = streamvc_model
-    discriminator = Discriminator()
+    discriminator = Discriminator(gradient_checkpointing=args.gradient_checkpointing)
 
     #####################
     # Create optimizers #

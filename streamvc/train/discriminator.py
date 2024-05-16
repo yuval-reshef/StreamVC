@@ -1,5 +1,7 @@
+import torch
 import torch.nn as nn
 from torch.nn.utils.parametrizations import weight_norm
+from torch.utils.checkpoint import checkpoint
 
 
 def weights_init(m):
@@ -16,7 +18,7 @@ def WNConv1d(*args, **kwargs):
 
 
 class NLayerDiscriminator(nn.Module):
-    def __init__(self, ndf, n_layers, downsampling_factor):
+    def __init__(self, ndf, n_layers, downsampling_factor, gradient_checkpointing: bool = False):
         super().__init__()
         model = nn.ModuleDict()
 
@@ -54,24 +56,34 @@ class NLayerDiscriminator(nn.Module):
         model["layer_%d" % (n_layers + 2)] = WNConv1d(
             nf, 1, kernel_size=3, stride=1, padding=1
         )
-
+        self.gradient_checkpointing = gradient_checkpointing
         self.model = model
 
-    def forward(self, x):
-        results = []
-        for key, layer in self.model.items():
-            x = layer(x)
-            results.append(x)
-        return results
+    def _run_function(self):
+        def custom_forward(*inputs):
+            results = []
+            x = inputs[0]
+            for key, layer in self.model.items():
+                x = layer(x)
+                results.append(x)
+            return results
+        return custom_forward
+
+    def forward(self, x: torch.Tensor):
+        if self.gradient_checkpointing:
+            return checkpoint(self._run_function(), x, use_reentrant=False)
+        else:
+            return self._run_function()(x)
 
 
 class Discriminator(nn.Module):
-    def __init__(self, n_blocks=3, n_features=16, n_layers=4, downsampling_factor=4):
+    def __init__(self, n_blocks=3, n_features=16, n_layers=4, downsampling_factor=4,
+                 gradient_checkpointing: bool = False):
         super().__init__()
         self.model = nn.ModuleList()
         for i in range(n_blocks):
             self.model.append(NLayerDiscriminator(
-                n_features, n_layers, downsampling_factor
+                n_features, n_layers, downsampling_factor, gradient_checkpointing=gradient_checkpointing
             ))
 
         self.downsample = nn.AvgPool1d(
