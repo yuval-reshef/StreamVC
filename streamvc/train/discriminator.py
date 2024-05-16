@@ -76,11 +76,12 @@ class Discriminator(nn.Module):
 
         self.downsample = nn.AvgPool1d(
             4, stride=2, padding=1, count_include_pad=False)
-        # TODO remove this as it does nothing in this case?
         self.apply(weights_init)
 
     def forward(self, x):
         results = []
+        if x.shape[-2] != 1:
+            x = x.unsqueeze(-2)
         for D in self.model:
             results.append(D(x))
             x = self.downsample(x)

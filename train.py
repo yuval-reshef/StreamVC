@@ -1,16 +1,16 @@
 from itertools import islice
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import einops
+import safetensors as st
 from streamvc.model import StreamVC
 from streamvc.train.discriminator import Discriminator
 from streamvc.train.loss import GeneratorLoss, DiscriminatorLoss, FeatureLoss, ReconstructionLoss
 from streamvc.train.encoder_classifier import EncoderClassifier
 from streamvc.train.libritts import get_libritts_dataloader
-import time
 from accelerate import Accelerator, DataLoaderConfiguration
 from accelerate.utils import ProjectConfiguration
+import time
 import os
 import argparse
 
@@ -111,6 +111,8 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
         betas=args.betas,
         weight_decay=args.weight_decay
     )
+    schedualer = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=args.schedualer_step, gamma=args.schedualer_gamma)
     dataloader = get_libritts_dataloader(
         TRAIN_SPLIT, args.batch_size, limit_samples=args.limit_batch_samples)
 
@@ -118,12 +120,14 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
         wrapped_content_encoder,
         optimizer,
         dataloader,
-        criterion
+        criterion,
+        schedualer
     ] = accelerator.prepare(
         wrapped_content_encoder,
         optimizer,
         dataloader,
-        criterion
+        criterion,
+        schedualer
     )
 
     # TODO: distributed inference with the hubert model
@@ -142,6 +146,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                 accelerator.backward(loss)
                 optimizer.step()
                 optimizer.zero_grad()
+                schedualer.step()
                 accelerator.log(
                     {
                         "loss/content_encoder": loss.item(),
@@ -271,8 +276,6 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
         for step, batch in enumerate(islice(dataloader, args.limit_num_batches)):
             with accelerator.accumulate(generator, discriminator):
                 x_pred_t = generator(batch, batch)
-                # x_pred_t = x_pred_t.unsqueeze(1)
-                # batch = batch.unsqueeze(1)
                 # Remove the first 2 frames from the generated audio
                 # because we match a output frame t with input frame t-2.
                 x_pred_t = x_pred_t[..., SAMPLES_PER_FRAME * 2:]
@@ -371,7 +374,9 @@ def main(args):
         "beta1": args.betas[1],
         "weight_decay": args.weight_decay,
         "gradient_accumulation_steps": accelerator.gradient_accumulation_steps,
-        "optimizer": args.optimizer
+        "optimizer": args.optimizer,
+        "schedualer_step": args.schedualer_step,
+        "schedualer_gamma": args.schedualer_gamma,
     }
     print_time(f"{hps=}")
     accelerator.init_trackers(args.run_name, config=hps)
@@ -386,8 +391,14 @@ def main(args):
         accuracy = compute_content_encoder_accuracy(
             wrapped_content_encoder, hubert_model, args)
         print_time(f"{accuracy=}")
-    # else:
-        # TODO: load content encoder checkpoint
+    else:
+        checkpoint = st.safe_open(args.content_encoder_checkpoint, "pt")
+        encoder_state_dict = {
+            key[len("encoder."):]: checkpoint.get_tensor(key)
+            for key in checkpoint.keys()
+            if key.startswith("encoder.")
+        }
+        streamvc.content_encoder.load_state_dict(encoder_state_dict)
 
     if args.module_to_train in ["decoder-and-speaker", "all"]:
         train_streamvc(streamvc, args)
@@ -419,10 +430,14 @@ if __name__ == '__main__':
     parser.add_argument("--lambda-adversarial", type=float, default=1)
     parser.add_argument("--content-encoder-checkpoint", type=str, default="")
     parser.add_argument("--module-to-train", type=str,
-                        choices=["content-encoder", "decoder-and-speaker", "all"], required=True)
+                        choices=["content-encoder",
+                                 "decoder-and-speaker", "all"],
+                        required=True)
     parser.add_argument("--accuracy-interval", type=int, default=100)
     parser.add_argument("--optimizer", type=str,
                         default="AdamW", choices=["Adam", "AdamW"])
+    parser.add_argument("--schedualer-step", type=int, default=100)
+    parser.add_argument("--schedualer-gamma", type=float, default=0.1)
 
     args = parser.parse_args()
 
