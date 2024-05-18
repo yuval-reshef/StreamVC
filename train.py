@@ -90,6 +90,15 @@ def get_batch_labels(hubert_model: nn.Module, batch: torch.Tensor) -> torch.Tens
     return torch.stack(labels, dim=0)
 
 
+@accelerator.on_main_process
+def log_gradients(model, step):
+    summary_writer = accelerator.get_tracker("tensorboard").tracker
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            summary_writer.add_histogram(
+                f"gradients/{name}", param.grad, global_step=step)
+
+
 def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, args: argparse.Namespace) -> nn.Module:
     """
     Train a content encoder as a classifier to predict the same labels as a discrete hubert model.
@@ -136,7 +145,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
     for epoch in range(0, args.num_epochs):
         print_time(f"epoch num: {epoch}")
         for step, batch in enumerate(islice(dataloader, args.limit_num_batches)):
-
+            global_step = epoch*step+step
             labels = get_batch_labels(hubert_model, batch)
             with accelerator.accumulate(wrapped_content_encoder):
                 outputs = wrapped_content_encoder(batch)
@@ -146,15 +155,16 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                 accelerator.backward(loss)
                 optimizer.step()
                 optimizer.zero_grad()
-                schedualer.step()
+                schedualer.step(global_step)
                 accelerator.log(
                     {
                         "loss/content_encoder": loss.item(),
+                        "lr/content_encoder": schedualer.get_last_lr()[0],
                         "allocated_memory": torch.cuda.max_memory_allocated()
                         if accelerator.device.type == "cuda"
                         else 0
                     },
-                    step=epoch*step+step)
+                    step=global_step)
                 costs.append(loss.item())
 
             # print loss
@@ -162,6 +172,9 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                 print_time(
                     f'[{epoch}, {step:5}] loss: {torch.tensor(costs).mean().item():.4}')
                 costs = []
+
+            log_gradients(wrapped_content_encoder, global_step)
+
             # save model checkpoints
             if (step + 1) % args.model_checkpoint_interval == 0:
                 accelerator.save_model(
@@ -170,6 +183,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                         args.checkpoint_path,
                         f"{args.run_name}_content_encoder_{epoch}_{step}"
                     ))
+
             # compute accuracy on main process
             if (step + 1) % args.accuracy_interval == 0:
                 if accelerator.is_main_process:
@@ -179,9 +193,8 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                         {
                             "accuracy/content_encoder": accuracy
                         },
-                        step=epoch*step+step)
+                        step=global_step)
                     print_time(f"accuracy: {accuracy:.2f}%")
-
             if accelerator.device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats()
 
@@ -246,7 +259,8 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     generator_loss_fn = GeneratorLoss()
     discriminator_loss_fn = DiscriminatorLoss()
     feature_loss_fn = FeatureLoss()
-    reconstruction_loss_fn = ReconstructionLoss()
+    reconstruction_loss_fn = ReconstructionLoss(
+        gradient_checkpointing=args.gradient_checkpointing)
 
     [
         generator,

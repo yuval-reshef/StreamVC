@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torchaudio.transforms import MelSpectrogram
+from torch.utils.checkpoint import checkpoint
 
 
 class DiscriminatorLoss(nn.Module):
@@ -46,16 +47,15 @@ class FeatureLoss(nn.Module):
 
 
 class ReconstructionLoss(nn.Module):
-    def __init__(self, sample_rate: int = 16_000, mel_bins=64):
+    def __init__(self, sample_rate: int = 16_000, mel_bins=64, gradient_checkpointing: bool = False):
         super().__init__()
         self.sample_rate = sample_rate
         self.mel_bins = mel_bins
+        self.gradient_checkpointing = gradient_checkpointing
 
-    def forward(self, original: torch.Tensor, generated: torch.Tensor):
-        assert original.shape == generated.shape
-
-        loss = torch.tensor(0., device=original.device, dtype=original.dtype)
-        for s_exp in range(6, 12):
+    def _calculate_for_scale(self):
+        def custom_run(*inputs):
+            original, generated, s_exp = inputs[0], inputs[1], inputs[2]
             s = 2 ** s_exp
             # Should satisfy n_fft >= win_length && ((n_fft // 2) + 1) >= n_mels.
             n_fft = 2 ** 11
@@ -67,7 +67,7 @@ class ReconstructionLoss(nn.Module):
                 n_fft=n_fft,
                 hop_length=hop_length,
                 n_mels=self.mel_bins
-            )
+            ).to(original.device)
             orig_audio_spec = mel_spectrogram(original)
             generated_audio_spec = mel_spectrogram(generated)
 
@@ -80,5 +80,18 @@ class ReconstructionLoss(nn.Module):
             l2_log_loss = torch.sqrt(l2_log_loss)
             l2_log_loss = l2_log_loss.mean()
 
-            loss += l1_loss + alpha_s * l2_log_loss
+            return l1_loss + alpha_s * l2_log_loss
+        return custom_run
+
+    def forward(self, original: torch.Tensor, generated: torch.Tensor):
+        assert original.shape == generated.shape
+        loss = torch.tensor(0., device=original.device, dtype=original.dtype)
+        for s_exp in range(6, 12):
+            if self.gradient_checkpointing:
+                loss += checkpoint(
+                    self._calculate_for_scale(),
+                    original, generated, s_exp,
+                    use_reentrant=False)
+            else:
+                loss += self._calculate_for_scale()(original, generated, s_exp)
         return loss

@@ -7,7 +7,7 @@ class EncoderClassifier(nn.Module):
     def __init__(self, encoder: nn.Module, in_features: int, out_features: int):
         super().__init__()
         self.encoder = encoder
-        self.norm = nn.LayerNorm(in_features)
+        self.norm = nn.LayerNorm(in_features, elementwise_affine=False)
         self.linear = nn.Linear(in_features, out_features)
 
     def forward(self, x):
