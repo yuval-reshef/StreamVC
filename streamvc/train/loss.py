@@ -52,6 +52,8 @@ class ReconstructionLoss(nn.Module):
         self.sample_rate = sample_rate
         self.mel_bins = mel_bins
         self.gradient_checkpointing = gradient_checkpointing
+        # TODO check which epsilon value we should use.
+        self.epsilon = 1e-6
 
     def _calculate_for_scale(self):
         def custom_run(*inputs):
@@ -75,7 +77,7 @@ class ReconstructionLoss(nn.Module):
             l1_loss = torch.abs(orig_audio_spec - generated_audio_spec)
             l1_loss = l1_loss.sum(dim=1).mean()
             l2_log_loss = torch.pow(
-                torch.log(orig_audio_spec) - torch.log(generated_audio_spec), exponent=2)
+                torch.log(orig_audio_spec + self.epsilon) - torch.log(generated_audio_spec + self.epsilon), exponent=2)
             l2_log_loss = l2_log_loss.sum(dim=1)
             l2_log_loss = torch.sqrt(l2_log_loss)
             l2_log_loss = l2_log_loss.mean()

@@ -145,7 +145,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
     for epoch in range(0, args.num_epochs):
         print_time(f"epoch num: {epoch}")
         for step, batch in enumerate(islice(dataloader, args.limit_num_batches)):
-            global_step = epoch*step+step
+            global_step = epoch * step + step
             labels = get_batch_labels(hubert_model, batch)
             with accelerator.accumulate(wrapped_content_encoder):
                 outputs = wrapped_content_encoder(batch)
@@ -237,12 +237,15 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     generator = streamvc_model
     discriminator = Discriminator(gradient_checkpointing=args.gradient_checkpointing)
 
+    for param in generator.content_encoder.parameters():
+        param.requires_grad = False
+
     #####################
     # Create optimizers #
     #####################
     optimizer_generator = get_optimizer(
         args.optimizer,
-        params=generator.parameters(),
+        params=[param for param in generator.parameters() if param.requires_grad],
         lr=args.lr,
         betas=args.betas,
         weight_decay=args.weight_decay)
@@ -323,10 +326,10 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                 generator.zero_grad()
                 discriminator.zero_grad()
                 losses = (
-                    discriminator_loss +
-                    args.lambda_adversarial * adversarial_loss +
-                    args.lambda_feature * feature_loss +
-                    args.lambda_reconstruction * reconstruction_loss)
+                        discriminator_loss +
+                        args.lambda_adversarial * adversarial_loss +
+                        args.lambda_feature * feature_loss +
+                        args.lambda_reconstruction * reconstruction_loss)
                 accelerator.backward(losses)
                 optimizer_discriminator.step()
                 optimizer_generator.step()
@@ -351,7 +354,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                     if accelerator.device.type == "cuda"
                     else 0
                 },
-                step=epoch*step+step)
+                step=epoch * step + step)
 
             if (step + 1) % args.log_interval == 0:
                 print_time(
