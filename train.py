@@ -99,6 +99,16 @@ def log_gradients(model, step):
                 f"gradients/{name}", param.grad, global_step=step)
 
 
+@accelerator.on_main_process
+def log_labels(outputs_flat, labels_flat, step):
+    _, predicted = torch.max(outputs_flat.data, 1)
+    summary_writer = accelerator.get_tracker("tensorboard").tracker
+    summary_writer.add_histogram(
+        "labels/content_encoder", predicted, global_step=step)
+    summary_writer.add_histogram(
+        "labels/hubert", labels_flat, global_step=step)
+
+
 def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, args: argparse.Namespace) -> nn.Module:
     """
     Train a content encoder as a classifier to predict the same labels as a discrete hubert model.
@@ -173,7 +183,11 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                     f'[{epoch}, {step:5}] loss: {torch.tensor(costs).mean().item():.4}')
                 costs = []
 
-            log_gradients(wrapped_content_encoder, global_step)
+            if args.log_gradient_interval and (step + 1) % args.log_gradient_interval == 0:
+                log_gradients(wrapped_content_encoder, global_step)
+
+            if args.log_labels_interval and (step + 1) % args.log_labels_interval == 0:
+                log_labels(outputs_flat, labels_flat, global_step)
 
             # save model checkpoints
             if (step + 1) % args.model_checkpoint_interval == 0:
@@ -235,7 +249,8 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     # Load PyTorch Models #
     #######################
     generator = streamvc_model
-    discriminator = Discriminator(gradient_checkpointing=args.gradient_checkpointing)
+    discriminator = Discriminator(
+        gradient_checkpointing=args.gradient_checkpointing)
 
     for param in generator.content_encoder.parameters():
         param.requires_grad = False
@@ -455,6 +470,7 @@ if __name__ == '__main__':
                         default="AdamW", choices=["Adam", "AdamW"])
     parser.add_argument("--schedualer-step", type=int, default=100)
     parser.add_argument("--schedualer-gamma", type=float, default=0.1)
+    parser.add_argument("--log-gradient-interval", type=int, default=None)
 
     args = parser.parse_args()
 
