@@ -65,4 +65,9 @@ def concat_and_pad_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
         for vec in tensors
     ]
     concatenated_vectors = torch.stack(padded_vectors, dim=0)
-    return concatenated_vectors
+    mask = torch.zeros_like(concatenated_vectors, dtype=torch.bool)
+
+    for i, vec in enumerate(tensors):
+        mask[i, :vec.shape[0]] = True
+
+    return concatenated_vectors, mask
