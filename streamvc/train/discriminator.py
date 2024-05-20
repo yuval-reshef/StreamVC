@@ -92,8 +92,7 @@ class Discriminator(nn.Module):
 
     def forward(self, x):
         results = []
-        if x.shape[-2] != 1:
-            x = x.unsqueeze(-2)
+        x = x.unsqueeze(-2)
         for D in self.model:
             results.append(D(x))
             x = self.downsample(x)

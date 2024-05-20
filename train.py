@@ -320,6 +320,8 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                 x_pred_t = x_pred_t[..., SAMPLES_PER_FRAME * 2:]
                 batch = batch[..., :x_pred_t.shape[-1]]
 
+                mask_ratio = mask.sum(dim=-1) / mask.shape[-1]
+
                 #######################
                 # Train Discriminator #
                 #######################
@@ -328,7 +330,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                 discriminator_real = discriminator(batch)
 
                 discriminator_loss = discriminator_loss_fn(
-                    discriminator_real, discriminator_fake_detached)
+                    discriminator_real, discriminator_fake_detached, mask_ratio)
 
                 ###################
                 # Train Generator #
@@ -336,14 +338,16 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                 discriminator_fake = discriminator(x_pred_t)
 
                 # Compute adversarial loss.
-                adversarial_loss = generator_loss_fn(discriminator_fake)
+                adversarial_loss = generator_loss_fn(
+                    discriminator_fake, mask_ratio)
 
                 # Compute feature loss.
                 feature_loss = feature_loss_fn(
-                    discriminator_real, discriminator_fake)
+                    discriminator_real, discriminator_fake, mask_ratio)
 
                 # Compute reconstruction loss.
-                reconstruction_loss = reconstruction_loss_fn(batch, x_pred_t)
+                reconstruction_loss = reconstruction_loss_fn(
+                    batch, x_pred_t, mask_ratio)
 
                 generator.zero_grad()
                 discriminator.zero_grad()

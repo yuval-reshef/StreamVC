@@ -5,25 +5,38 @@ from torchaudio.transforms import MelSpectrogram
 from torch.utils.checkpoint import checkpoint
 
 
+def masked_mean_from_ratios(tensor: torch.Tensor, mask_ratio: torch.Tensor):
+    assert len(tensor.shape) == 3
+    assert len(mask_ratio.shape) == 1
+    assert mask_ratio.shape[0] == tensor.shape[0]
+
+    _, _, samples = tensor.shape
+    original_lengths = torch.floor(mask_ratio * samples).to(torch.int16)
+    num_original_samples = original_lengths.sum()
+    mask = (torch.arange(samples, device=tensor.device)
+            < original_lengths.unsqueeze(1)).unsqueeze(1)
+    return torch.where(mask, tensor, 0).sum() / num_original_samples
+
+
 class DiscriminatorLoss(nn.Module):
-    def forward(self, real: list[list[torch.Tensor]], fake: list[list[torch.Tensor]]):
+    def forward(self, real: list[list[torch.Tensor]], fake: list[list[torch.Tensor]], mask_ratio: torch.Tensor):
         loss = torch.tensor(
             0., device=real[0][0].device, dtype=real[0][0].dtype)
 
         for scale in real:
-            loss += F.relu(1 - scale[-1]).mean()
+            loss += masked_mean_from_ratios(F.relu(1 - scale[-1]), mask_ratio)
         for scale in fake:
-            loss += F.relu(1 + scale[-1]).mean()
+            loss += masked_mean_from_ratios(F.relu(1 + scale[-1]), mask_ratio)
 
         return loss
 
 
 class GeneratorLoss(nn.Module):
-    def forward(self, fake: list[list[torch.Tensor]]):
+    def forward(self, fake: list[list[torch.Tensor]], mask_ratio: torch.Tensor):
         loss = torch.tensor(
             0., device=fake[0][0].device, dtype=fake[0][0].dtype)
         for scale in fake:
-            loss += -scale[-1].mean()
+            loss += -masked_mean_from_ratios(scale[-1], mask_ratio)
         return loss
 
 
@@ -34,7 +47,7 @@ class FeatureLoss(nn.Module):
         self.n_features = n_features
         self.n_layers = n_layers
 
-    def forward(self, real: list[list[torch.Tensor]], fake: list[list[torch.Tensor]]):
+    def forward(self, real: list[list[torch.Tensor]], fake: list[list[torch.Tensor]], mask_ratio: torch.Tensor):
         loss = torch.tensor(
             0., device=real[0][0].device, dtype=real[0][0].dtype)
         feature_weights = 4.0 / (self.n_layers + 1)
@@ -42,7 +55,9 @@ class FeatureLoss(nn.Module):
         wt = discriminator_weights * feature_weights
         for i in range(self.n_blocks):
             for j in range(len(fake[i]) - 1):
-                loss += wt * F.l1_loss(fake[i][j], real[i][j].detach())
+                loss += wt * \
+                    masked_mean_from_ratios(
+                        torch.abs(fake[i][j]-real[i][j]).detach(), mask_ratio)
         return loss
 
 
@@ -57,7 +72,7 @@ class ReconstructionLoss(nn.Module):
 
     def _calculate_for_scale(self):
         def custom_run(*inputs):
-            original, generated, s_exp = inputs[0], inputs[1], inputs[2]
+            original, generated, s_exp, mask_ratio = inputs[0], inputs[1], inputs[2], inputs[3]
             s = 2 ** s_exp
             # Should satisfy n_fft >= win_length && ((n_fft // 2) + 1) >= n_mels.
             n_fft = 2 ** 11
@@ -75,25 +90,26 @@ class ReconstructionLoss(nn.Module):
 
             alpha_s = torch.sqrt(torch.tensor(s) / 2).to(original.device)
             l1_loss = torch.abs(orig_audio_spec - generated_audio_spec)
-            l1_loss = l1_loss.sum(dim=1).mean()
+            l1_loss = masked_mean_from_ratios(
+                l1_loss.sum(dim=1, keepdim=True), mask_ratio)
             l2_log_loss = torch.pow(
                 torch.log(orig_audio_spec + self.epsilon) - torch.log(generated_audio_spec + self.epsilon), exponent=2)
-            l2_log_loss = l2_log_loss.sum(dim=1)
+            l2_log_loss = l2_log_loss.sum(dim=1, keepdim=True)
             l2_log_loss = torch.sqrt(l2_log_loss)
-            l2_log_loss = l2_log_loss.mean()
+            l2_log_loss = masked_mean_from_ratios(l2_log_loss, mask_ratio)
 
             return l1_loss + alpha_s * l2_log_loss
         return custom_run
 
-    def forward(self, original: torch.Tensor, generated: torch.Tensor):
+    def forward(self, original: torch.Tensor, generated: torch.Tensor, mask_ratio: torch.Tensor):
         assert original.shape == generated.shape
         loss = torch.tensor(0., device=original.device, dtype=original.dtype)
         for s_exp in range(6, 12):
             if self.gradient_checkpointing:
                 loss += checkpoint(
                     self._calculate_for_scale(),
-                    original, generated, s_exp,
+                    original, generated, s_exp, mask_ratio,
                     use_reentrant=False)
             else:
-                loss += self._calculate_for_scale()(original, generated, s_exp)
+                loss += self._calculate_for_scale()(original, generated, s_exp, mask_ratio)
         return loss
