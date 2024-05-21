@@ -457,7 +457,8 @@ def main(args):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Training script for the StreamVC model.")
+    parser = argparse.ArgumentParser(description="Training script for the StreamVC model.",
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # General settings.
     parser.add_argument("--run-name", type=str, default="streamvc",
@@ -491,7 +492,8 @@ if __name__ == '__main__':
                         help="Weight decay for the optimizer.")
     parser.add_argument("--no-gradient-checkpointing", action="store_false",
                         dest='gradient_checkpointing', default=True,
-                        help="Disable gradient checkpointing to save memory at the cost of compute speed.")
+                        help="Disable gradient checkpointing to increase compute speed at the cost of increased memory"
+                             "usage.")
     parser.add_argument("--scheduler-step", type=int, default=100,
                         help="Step interval for learning rate scheduler updates.")
     parser.add_argument("--scheduler-gamma", type=float, default=0.1,
