@@ -456,39 +456,48 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    # General settings.
     parser.add_argument("--run-name", type=str, default="streamvc")
+    parser.add_argument("--module-to-train", type=str,
+                        choices=["content-encoder",
+                                 "decoder-and-speaker", "all"],
+                        default="all")
+    parser.add_argument("--content-encoder-checkpoint", type=str, default="")
+
+    # General hyperparameters.
     parser.add_argument("--batch-size", type=int, default=24)
     parser.add_argument("--limit-num-batches", type=int, default=None)
     parser.add_argument("--limit-batch-samples", type=int, default=16_000 * 20)
     parser.add_argument("--num-epochs", type=int, default=1)
+    parser.add_argument("--optimizer", type=str,
+                        default="AdamW", choices=["Adam", "AdamW"])
     parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--checkpoint-path", type=str,
-                        default=os.path.join(
-                            os.environ.get("HF_HOME", os.getcwd()),
-                            "checkpoints"))
     parser.add_argument("--betas", type=float, nargs=2, default=(0.5, 0.9))
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--no-gradient-checkpointing",
                         action="store_false", dest='gradient_checkpointing',
                         default=True)
-    parser.add_argument("--log-interval", type=int, default=20)
-    parser.add_argument("--model-checkpoint-interval", type=int, default=100)
+    parser.add_argument("--scheduler-step", type=int, default=100)
+    parser.add_argument("--scheduler-gamma", type=float, default=0.1)
+
+    # Content encoder hyperparameters.
+    parser.add_argument("--encoder-dropout", type=float, default=0.1)
+
+    # Decoder hyperparameters.
     parser.add_argument("--lambda-feature", type=float, default=100)
     parser.add_argument("--lambda-reconstruction", type=float, default=1)
     parser.add_argument("--lambda-adversarial", type=float, default=1)
-    parser.add_argument("--content-encoder-checkpoint", type=str, default="")
-    parser.add_argument("--module-to-train", type=str,
-                        choices=["content-encoder",
-                                 "decoder-and-speaker", "all"],
-                        default="all")
+
+    # Logs and outputs.
+    parser.add_argument("--model-checkpoint-interval", type=int, default=100)
     parser.add_argument("--accuracy-interval", type=int, default=100)
-    parser.add_argument("--optimizer", type=str,
-                        default="AdamW", choices=["Adam", "AdamW"])
-    parser.add_argument("--scheduler-step", type=int, default=100)
-    parser.add_argument("--scheduler-gamma", type=float, default=0.1)
+    parser.add_argument("--log-interval", type=int, default=20)
     parser.add_argument("--log-gradient-interval", type=int, default=None)
     parser.add_argument("--log-labels-interval", type=int, default=None)
-    parser.add_argument("--encoder-dropout", type=float, default=0.1)
+    parser.add_argument("--checkpoint-path", type=str,
+                        default=os.path.join(
+                            os.environ.get("HF_HOME", os.getcwd()),
+                            "checkpoints"))
 
     args = parser.parse_args()
 
