@@ -1,0 +1,5 @@
+torch==2.2.2
+torchaudio==2.2.2
+safetensors==0.4.3
+einops==0.7.0
+soundfile==0.12.1
