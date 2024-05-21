@@ -1,5 +1,8 @@
 # StreamVC
 An unofficial pytorch implementation of [STREAMVC: REAL-TIME LOW-LATENCY VOICE CONVERSION](https://arxiv.org/pdf/2401.03078.pdf).
+It was created for learning purposes, it isn't feature complete, and it doesn't replicate the results from the paper.
+
+The streaming infernce isn't fully implemented.
 
 ```mermaid
 flowchart LR 
@@ -30,57 +33,52 @@ flowchart LR
     classDef else fill:#373,color:#ccc;
     class SP,CE,CL,D,f0,f0y,FE,CAT else;
 ```
-## TO-Dos
-### Components
-- [ ] (1) Content Encoder
- - Follows [SoundStream](https://arxiv.org/pdf/2107.03312.pdf) encoder design.
- - C (scale parameter) = 64, D (embedding dimensionality) = 64.
- - No [FiLM](https://arxiv.org/pdf/1709.07871.pdf) (Feature-wise Linear Modulation) conditioning.
- - [Implementation](https://github.com/lucidrains/audiolm-pytorch/blob/main/audiolm_pytorch/soundstream.py) of SoundStream in AudioLM repo.
- - Streaming-aware convolution modules which were introduced in [KWS-Streaming](https://arxiv.org/pdf/2005.06720.pdf) and extended in [Streaming-SEANet](https://arxiv.org/pdf/2010.10677.pdf) should be used for inference. They have an official [TensorFlow/Keras implementation](https://github.com/google-research/google-research/tree/master/kws_streaming) but not in pytorch. [pytorch-tcn](https://github.com/paul-krug/pytorch-tcn/tree/main) has a streaming implementation for a casual convolution.
-- [ ] (2) Speech Encoder
- - Same as (1).
- - C = 32, D = 64.
- - Per-Frame Encoding.
- - No streaming needed.
-- [ ] (3) Decoder
- - Follows [SoundStream](https://arxiv.org/pdf/2107.03312.pdf) decoder design.
- - C (scale parameter) = 40, D (embedding dimensionality) = 64.
- - [FiLM](https://arxiv.org/pdf/1709.07871.pdf) (Feature-wise Linear Modulation) layers are used between residual units to condition on speaker latent from (7).
- - [Implementation](https://github.com/lucidrains/audiolm-pytorch/blob/main/audiolm_pytorch/soundstream.py) of SoundStream in AudioLM repo.
- - Streaming as in (1).
-- [ ] (4) f0 estimation
- - [Yin algorithm](http://audition.ens.fr/adc/pdf/2002_JASA_YIN.pdf)
- - [Numpy Implementation](https://github.com/patriceguyot/Yin)
- - Also [implemented in librosa](https://librosa.org/doc/main/generated/librosa.yin.html)
- - We can't use a package for this since we need internal parameters of the algorithm (the cumulative mean normalized difference value at the estimated period and the estimated unvoiced signal predicate) + we need streaming suppport, so we might as well implement it in pytorch.
- - Streaming in inference (computed on a 3 frame window).
-- [ ] (5) f0 whitening
- - Normalization of the f0 envelopes based on utterance-level mean & std.
- - During streaming inference, running averages are used.
-- [ ] (6) energy estimation
- - Energy of each audio frame, measured via sample variance.
- - During streaming inference, running averages are used.
-- [ ] (7) Learnable Pooling
- - Global (utterance-level) context aggregator of per-frame encoding from (2).
- - Weighted average pooling where weights are derived from an attention mechanism with a single learnt query.
-- [ ] (8) HuBert based pseudo labels
- - Soft labels from [HuBert](https://arxiv.org/pdf/2106.07447.pdf) based on the procedure from [Soft-VC](https://arxiv.org/pdf/2111.02392.pdf).
- - [Implementation of Soft-VC](https://github.com/bshall/soft-vc) contains a specific [implementation for this part](https://github.com/bshall/hubert) which we can probably use as is.
- - These are used to train (1) with cross-entropy loss.
-- [ ] (9) Discriminator
- - Multi-scale STFT discriminator.
- - based on [MelGan](https://arxiv.org/pdf/1910.06711.pdf) and [Streaming-SEANet](https://arxiv.org/pdf/2010.10677.pdf).
- - In the [Official implementation of MelGan](https://github.com/descriptinc/melgan-neurips/blob/master/mel2wav/modules.py).
- - In the [Unofficial implementation of Streaming-SEANet](https://github.com/zeroone-universe/RealTimeBWE/blob/master/MelGAN.py).
 
-
+## Example Usage
 ### Training
-The dataset LibriTTS ([OpenSLR](https://openslr.org/60/)) is used in the paper.
-It has a [dataset page](https://huggingface.co/datasets/blabble-io/libritts) in HuggingFace.
-There is also LibriTTS-R ([OpenSLR](http://www.openslr.org/141/)) which is a higher quality version (cleaned LibriTTS). [HuggingFace](https://huggingface.co/datasets/blabble-io/libritts_r).
+#### Requirements
+To install the requirements for training run:
+```bash
+pip install -r requirements-training.txt
+```
+#### Running the training script
+`train.py` is the python script for training, it uses [🤗 Accelerate](https://huggingface.co/docs/accelerate).
+To cofigure Accelerate to your enviroenment use [`accelerator config`](https://huggingface.co/docs/accelerate/package_reference/cli#accelerate-config).
 
-### Scripts
-- [ ] `train.py` python script for training.
-- [ ] `inference.py` python script for inference on a single source & target combo.
+To launch the script, run:
+```bash
+accelerate launch [ACCELERATE-OPTIONS] train.py [TRAINING-OPTIONS]
+```
+To see the available training options, run: 
 
+```
+python train.py --help
+```
+### Inference
+#### Requirements
+To install the requirements for inference run:
+```bash
+pip install -r requirements-inference.txt
+```
+#### Running the script
+ `inference.py` is the python script for inference on a single source & target combo.
+
+
+To launch the script, run:
+```bash
+python inference.py [INFERENCE-OPTIONS] -s <source_speech> -t <target_speech>
+-o <output_file>
+```
+To see the available inference options, run: 
+
+```
+python inference.py --help
+```
+
+## Acknowledgements
+This project was made possible by the following open source projects:
+
+ - For the encoder-decoder architecture (based on SoundStream) we based our code on [AudioLM's official implementation](https://github.com/lucidrains/audiolm-pytorch).
+ - For the multi-scale discriminator and the discriminator losses we based our code on [MelGan's official implementation](https://github.com/descriptinc/melgan-neurips).
+ -  For the HuBert discrete units computation we used the HuBert + KMeans implementation from [SoftVC's official implementation](https://github.com/bshall/soft-vc).
+ - For the Yin algorithm we based our implementation on the [torch-yin package](https://github.com/brentspell/torch-yin).
