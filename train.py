@@ -480,7 +480,7 @@ if __name__ == '__main__':
     parser.add_argument("--module-to-train", type=str,
                         choices=["content-encoder",
                                  "decoder-and-speaker", "all"],
-                        required=True)
+                        default="all")
     parser.add_argument("--accuracy-interval", type=int, default=100)
     parser.add_argument("--optimizer", type=str,
                         default="AdamW", choices=["Adam", "AdamW"])
