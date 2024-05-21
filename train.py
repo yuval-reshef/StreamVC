@@ -1,18 +1,20 @@
+import argparse
+import os
+import time
 from itertools import islice
-import torch
-import torch.nn as nn
+
 import einops
 import safetensors as st
-from streamvc.model import StreamVC
-from streamvc.train.discriminator import Discriminator
-from streamvc.train.loss import GeneratorLoss, DiscriminatorLoss, FeatureLoss, ReconstructionLoss
-from streamvc.train.encoder_classifier import EncoderClassifier
-from streamvc.train.libritts import get_libritts_dataloader
+import torch
+import torch.nn as nn
 from accelerate import Accelerator, DataLoaderConfiguration
 from accelerate.utils import ProjectConfiguration
-import time
-import os
-import argparse
+
+from streamvc.model import StreamVC
+from streamvc.train.discriminator import Discriminator
+from streamvc.train.encoder_classifier import EncoderClassifier
+from streamvc.train.libritts import get_libritts_dataloader
+from streamvc.train.loss import GeneratorLoss, DiscriminatorLoss, FeatureLoss, ReconstructionLoss
 
 accelerator = Accelerator(log_with="tensorboard",
                           project_config=ProjectConfiguration(
@@ -455,49 +457,72 @@ def main(args):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Training script for the StreamVC model.")
+
     # General settings.
-    parser.add_argument("--run-name", type=str, default="streamvc")
+    parser.add_argument("--run-name", type=str, default="streamvc",
+                        help="Name of the training run for identification purposes.")
     parser.add_argument("--module-to-train", type=str,
-                        choices=["content-encoder",
-                                 "decoder-and-speaker", "all"],
-                        default="all")
-    parser.add_argument("--content-encoder-checkpoint", type=str, default="")
+                        choices=["content-encoder", "decoder-and-speaker", "all"],
+                        default="all",
+                        help="Specify which module to train: 'content-encoder', 'decoder-and-speaker', or 'all' "
+                             "for both.")
+    parser.add_argument("--content-encoder-checkpoint", type=str, default="",
+                        help="Path to the content encoder checkpoint. Must be provided when --model-to-train is "
+                             "decoder-and-speaker")
 
     # General hyperparameters.
-    parser.add_argument("--batch-size", type=int, default=24)
-    parser.add_argument("--limit-num-batches", type=int, default=None)
-    parser.add_argument("--limit-batch-samples", type=int, default=16_000 * 20)
-    parser.add_argument("--num-epochs", type=int, default=1)
-    parser.add_argument("--optimizer", type=str,
-                        default="AdamW", choices=["Adam", "AdamW"])
-    parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--betas", type=float, nargs=2, default=(0.5, 0.9))
-    parser.add_argument("--weight-decay", type=float, default=1e-2)
-    parser.add_argument("--no-gradient-checkpointing",
-                        action="store_false", dest='gradient_checkpointing',
-                        default=True)
-    parser.add_argument("--scheduler-step", type=int, default=100)
-    parser.add_argument("--scheduler-gamma", type=float, default=0.1)
+    parser.add_argument("--batch-size", type=int, default=24,
+                        help="Batch size for training.")
+    parser.add_argument("--limit-num-batches", type=int, default=None,
+                        help="Limit the number of batches per epoch. Use None for no limit.")
+    parser.add_argument("--limit-batch-samples", type=int, default=16_000 * 10,
+                        help="Limit the number of samples for audio signal in the batch.")
+    parser.add_argument("--num-epochs", type=int, default=1,
+                        help="Number of epochs for training.")
+    parser.add_argument("--optimizer", type=str, default="AdamW",
+                        choices=["Adam", "AdamW"],
+                        help="Optimizer to use for training. Choose between 'Adam' and 'AdamW'.")
+    parser.add_argument("--lr", type=float, default=0.001,
+                        help="Learning rate for the optimizer.")
+    parser.add_argument("--betas", type=float, nargs=2, default=(0.5, 0.9),
+                        help="Beta parameters for the Adam or AdamW optimizer.")
+    parser.add_argument("--weight-decay", type=float, default=1e-2,
+                        help="Weight decay for the optimizer.")
+    parser.add_argument("--no-gradient-checkpointing", action="store_false",
+                        dest='gradient_checkpointing', default=True,
+                        help="Disable gradient checkpointing to save memory at the cost of compute speed.")
+    parser.add_argument("--scheduler-step", type=int, default=100,
+                        help="Step interval for learning rate scheduler updates.")
+    parser.add_argument("--scheduler-gamma", type=float, default=0.1,
+                        help="Gamma parameter for learning rate scheduler, controlling the decay rate.")
 
     # Content encoder hyperparameters.
-    parser.add_argument("--encoder-dropout", type=float, default=0.1)
+    parser.add_argument("--encoder-dropout", type=float, default=0.1,
+                        help="Dropout rate for the content encoder training.")
 
     # Decoder hyperparameters.
-    parser.add_argument("--lambda-feature", type=float, default=100)
-    parser.add_argument("--lambda-reconstruction", type=float, default=1)
-    parser.add_argument("--lambda-adversarial", type=float, default=1)
+    parser.add_argument("--lambda-feature", type=float, default=100,
+                        help="Weight of the feature matching loss.")
+    parser.add_argument("--lambda-reconstruction", type=float, default=1,
+                        help="Weight of the reconstruction loss.")
+    parser.add_argument("--lambda-adversarial", type=float, default=1,
+                        help="Weight of the adversarial loss.")
 
     # Logs and outputs.
-    parser.add_argument("--model-checkpoint-interval", type=int, default=100)
-    parser.add_argument("--accuracy-interval", type=int, default=100)
-    parser.add_argument("--log-interval", type=int, default=20)
-    parser.add_argument("--log-gradient-interval", type=int, default=None)
-    parser.add_argument("--log-labels-interval", type=int, default=None)
+    parser.add_argument("--model-checkpoint-interval", type=int, default=100,
+                        help="Interval (in steps) at which to save model checkpoints.")
+    parser.add_argument("--accuracy-interval", type=int, default=100,
+                        help="Interval (in steps) at which to compute and log accuracy.")
+    parser.add_argument("--log-interval", type=int, default=20,
+                        help="Interval (in steps) at which to log training metrics.")
+    parser.add_argument("--log-gradient-interval", type=int, default=None,
+                        help="Interval (in steps) at which to log gradient information. Use None to disable.")
+    parser.add_argument("--log-labels-interval", type=int, default=None,
+                        help="Interval (in steps) at which to log label information. Use None to disable.")
     parser.add_argument("--checkpoint-path", type=str,
-                        default=os.path.join(
-                            os.environ.get("HF_HOME", os.getcwd()),
-                            "checkpoints"))
+                        default=os.path.join(os.environ.get("HF_HOME", os.getcwd()), "checkpoints"),
+                        help="Path to save model checkpoints.")
 
     args = parser.parse_args()
 
