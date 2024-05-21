@@ -90,11 +90,10 @@ class ReconstructionLoss(nn.Module):
 
             alpha_s = torch.sqrt(torch.tensor(s) / 2).to(original.device)
             l1_loss = torch.abs(orig_audio_spec - generated_audio_spec)
-            l1_loss = masked_mean_from_ratios(
-                l1_loss.sum(dim=1, keepdim=True), mask_ratio)
+            l1_loss = masked_mean_from_ratios(l1_loss, mask_ratio)
             l2_log_loss = torch.pow(
                 torch.log(orig_audio_spec + self.epsilon) - torch.log(generated_audio_spec + self.epsilon), exponent=2)
-            l2_log_loss = l2_log_loss.sum(dim=1, keepdim=True)
+            l2_log_loss = l2_log_loss.mean(dim=1, keepdim=True)
             l2_log_loss = torch.sqrt(l2_log_loss)
             l2_log_loss = masked_mean_from_ratios(l2_log_loss, mask_ratio)
 

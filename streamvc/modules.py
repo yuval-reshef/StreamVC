@@ -36,18 +36,55 @@ class CausalConv1d(nn.Conv1d):
             dilation=dilation,
             **kwargs
         )
+        self.in_channels = in_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.dilation = dilation
 
-        causal_padding = max(0, dilation * (kernel_size - 1) - (stride - 1))
+        self.causal_padding = max(
+            0, dilation * (kernel_size - 1) - (stride - 1))
+        self.padding_mode = padding_mode
 
-        if padding_mode == 'zeros':
-            self.pad = partial(F.pad, pad=(causal_padding, 0),
-                               mode='constant', value=0)
-        else:
-            self.pad = partial(F.pad, pad=(causal_padding, 0),
-                               mode=padding_mode)
+        self.register_buffer('streaming_buffer',
+                             torch.tensor([]), persistent=False)
+        self.streaming_mode = False
+
+    def _pad(self, x):
+        if self.padding_mode == 'zeros':
+            return F.pad(x, pad=(self.causal_padding, 0),
+                         mode='constant', value=0)
+        return F.pad(x, pad=(self.causal_padding, 0),
+                     mode=self.padding_mode)
 
     def forward(self, x):
-        return super().forward(self.pad(x))
+        if self.streaming_mode:
+            return self.streaming_forward(x)
+
+        return super().forward(self._pad(x))
+
+    def init_streaming_buffer(self):
+        self.streaming_buffer = torch.zeros(
+            self.in_channels, self.causal_padding, device=next(iter(self.params())).device)
+
+    def remove_streaming_buffer(self):
+        self.streaming_buffer = torch.tensor(
+            [], device=next(iter(self.params())).device)
+
+    def streaming_forward(self, x):
+        if self.streaming_buffer.numel() == 0:
+            full_input = x
+        else:
+            full_input = torch.cat([self.streaming_buffer, x], dim=-1)
+
+        num_samples = full_input.shape[-1]
+        kernel_reception_field = self.dilation * (self.kernel_size - 1) + 1
+        num_strides = (num_samples - kernel_reception_field) // self.stride + 1
+        num_elements_for_forward = kernel_reception_field + \
+            (num_strides - 1) * self.stride
+        ready_input = full_input[..., :num_elements_for_forward]
+        new_buffer_size = num_samples - num_strides * self.stride
+        self.streaming_buffer = full_input[..., -new_buffer_size:]
+        return super().forward(ready_input)
 
 
 class CausalConvTranspose1d(nn.ConvTranspose1d):

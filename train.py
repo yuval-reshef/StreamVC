@@ -135,8 +135,8 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
         betas=args.betas,
         weight_decay=args.weight_decay
     )
-    schedualer = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=args.schedualer_step, gamma=args.schedualer_gamma)
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=args.scheduler_step, gamma=args.scheduler_gamma)
     dataloader = get_libritts_dataloader(
         TRAIN_SPLIT, args.batch_size, limit_samples=args.limit_batch_samples)
 
@@ -145,22 +145,22 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
         optimizer,
         dataloader,
         criterion,
-        schedualer
+        scheduler
     ] = accelerator.prepare(
         wrapped_content_encoder,
         optimizer,
         dataloader,
         criterion,
-        schedualer
+        scheduler
     )
 
     # TODO: distributed inference with the hubert model
     hubert_model.to(accelerator.device)
     costs = []
+    global_step = 0
     for epoch in range(0, args.num_epochs):
         print_time(f"epoch num: {epoch}")
         for step, (batch, mask) in enumerate(islice(dataloader, args.limit_num_batches)):
-            global_step = epoch * step + step
             labels = get_batch_labels(hubert_model, batch, mask)
             with accelerator.accumulate(wrapped_content_encoder):
                 outputs = wrapped_content_encoder(batch)
@@ -169,16 +169,16 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                 loss = criterion(outputs_flat, labels_flat)
                 accelerator.backward(loss)
 
-                if args.log_gradient_interval and (step + 1) % args.log_gradient_interval == 0:
+                if args.log_gradient_interval and (global_step + 1) % args.log_gradient_interval == 0:
                     log_gradients(wrapped_content_encoder, global_step)
 
                 optimizer.step()
                 optimizer.zero_grad()
-                schedualer.step(global_step)
+                scheduler.step(global_step)
                 accelerator.log(
                     {
                         "loss/content_encoder": loss.item(),
-                        "lr/content_encoder": schedualer.get_last_lr()[0],
+                        "lr/content_encoder": scheduler.get_last_lr()[0],
                         "allocated_memory": torch.cuda.max_memory_allocated()
                         if accelerator.device.type == "cuda"
                         else 0
@@ -187,16 +187,16 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                 costs.append(loss.item())
 
             # print loss
-            if (step + 1) % args.log_interval == 0:
+            if (global_step + 1) % args.log_interval == 0:
                 print_time(
                     f'[{epoch}, {step:5}] loss: {torch.tensor(costs).mean().item():.4}')
                 costs = []
 
-            if args.log_labels_interval and (step + 1) % args.log_labels_interval == 0:
+            if args.log_labels_interval and (global_step + 1) % args.log_labels_interval == 0:
                 log_labels(outputs_flat, labels_flat, global_step)
 
             # save model checkpoints
-            if (step + 1) % args.model_checkpoint_interval == 0:
+            if (global_step + 1) % args.model_checkpoint_interval == 0:
                 accelerator.save_model(
                     wrapped_content_encoder,
                     save_directory=os.path.join(
@@ -205,7 +205,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                     ))
 
             # compute accuracy on main process
-            if (step + 1) % args.accuracy_interval == 0:
+            if (global_step + 1) % args.accuracy_interval == 0:
                 if accelerator.is_main_process:
                     accuracy = compute_content_encoder_accuracy(
                         wrapped_content_encoder, hubert_model, dev=True)
@@ -218,6 +218,7 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
             if accelerator.device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats()
 
+            global_step += 1
     return wrapped_content_encoder
 
 
@@ -310,6 +311,7 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     )
 
     costs = []
+    global_step = 0
     for epoch in range(0, args.num_epochs):
         print_time(f"epoch num: {epoch}")
         for step, (batch, mask) in enumerate(islice(dataloader, args.limit_num_batches)):
@@ -380,13 +382,13 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                     if accelerator.device.type == "cuda"
                     else 0
                 },
-                step=epoch * step + step)
+                step=global_step)
 
-            if (step + 1) % args.log_interval == 0:
+            if (global_step + 1) % args.log_interval == 0:
                 print_time(
                     f'[{epoch}, {step:5}] loss: {torch.tensor(costs).mean().item():.4}')
                 costs = []
-            if (step + 1) % args.model_checkpoint_interval == 0:
+            if (global_step + 1) % args.model_checkpoint_interval == 0:
                 accelerator.save_model(
                     generator,
                     save_directory=os.path.join(
@@ -401,6 +403,8 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                     ))
             if accelerator.device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats()
+
+            global_step += 1
 
 
 def main(args):
@@ -418,8 +422,8 @@ def main(args):
         "weight_decay": args.weight_decay,
         "gradient_accumulation_steps": accelerator.gradient_accumulation_steps,
         "optimizer": args.optimizer,
-        "schedualer_step": args.schedualer_step,
-        "schedualer_gamma": args.schedualer_gamma,
+        "scheduler_step": args.scheduler_step,
+        "scheduler_gamma": args.scheduler_gamma,
         "encoder-dropout": args.encoder_dropout,
     }
     print_time(f"{hps=}")
@@ -480,8 +484,8 @@ if __name__ == '__main__':
     parser.add_argument("--accuracy-interval", type=int, default=100)
     parser.add_argument("--optimizer", type=str,
                         default="AdamW", choices=["Adam", "AdamW"])
-    parser.add_argument("--schedualer-step", type=int, default=100)
-    parser.add_argument("--schedualer-gamma", type=float, default=0.1)
+    parser.add_argument("--scheduler-step", type=int, default=100)
+    parser.add_argument("--scheduler-gamma", type=float, default=0.1)
     parser.add_argument("--log-gradient-interval", type=int, default=None)
     parser.add_argument("--log-labels-interval", type=int, default=None)
     parser.add_argument("--encoder-dropout", type=float, default=0.1)
