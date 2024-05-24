@@ -29,7 +29,7 @@ torch.backends.cudnn.benchmark = True
 NUM_CLASSES = 100
 EMBEDDING_DIMS = 64
 SAMPLES_PER_FRAME = 320
-TRAIN_SPLIT = "train.other.500"
+TRAIN_SPLIT = "train.clean.100"
 DEV_SPLIT = "dev.clean"
 TEST_SPLIT = "test.clean"
 DEVICE = accelerator.device
@@ -67,13 +67,6 @@ def print_cuda_memory(s):
         " | ".join(
             map(lambda x: f"{x[0]} {sizeof_fmt(x[1]):8}", size.items()))
         + f" - {s}")
-
-
-def get_optimizer(name, **args):
-    if name == "Adam":
-        return torch.optim.Adam(**args)
-    if name == "AdamW":
-        return torch.optim.AdamW(**args)
 
 
 @torch.no_grad()
@@ -116,6 +109,36 @@ def log_labels(outputs_flat, labels_flat, step):
         "labels/hubert", labels_flat, global_step=step)
 
 
+def get_lr_Scheduler(optimizer, args):
+    if args.scheduler == "StepLR":
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=args.scheduler_step,
+            gamma=args.scheduler_step_gamma
+        )
+    elif args.scheduler == "LinearLR":
+        return torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=args.scheduler_linear_start,
+            end_factor=args.scheduler_linear_end,
+            total_iters=args.num_epochs * args.limit_num_batches
+        )
+    elif args.scheduler == "ExponentialLR":
+        return torch.optim.lr_scheduler.ExponentialLR(
+            optimizer,
+            gamma=args.scheduler_gamma
+        )
+    elif args.scheduler == "OneCycleLR":
+        return torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=args.scheduler_onecycle_max,
+            steps_per_epoch=args.limit_num_batches,
+            epochs=args.num_epochs
+        )
+    else:
+        raise ValueError(f"Unknown scheduler: {args.scheduler}")
+
+
 def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, args: argparse.Namespace) -> nn.Module:
     """
     Train a content encoder as a classifier to predict the same labels as a discrete hubert model.
@@ -130,28 +153,39 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
     wrapped_content_encoder = EncoderClassifier(
         content_encoder, EMBEDDING_DIMS, NUM_CLASSES, dropout=args.encoder_dropout).train()
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
-    optimizer = get_optimizer(
-        args.optimizer,
+    optimizer = torch.optim.AdamW(
         params=wrapped_content_encoder.parameters(),
         lr=args.lr,
         betas=args.betas,
         weight_decay=args.weight_decay
     )
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=args.scheduler_step, gamma=args.scheduler_gamma)
+    scheduler = get_lr_Scheduler(optimizer, args)
+
     dataloader = get_libritts_dataloader(
-        TRAIN_SPLIT, args.batch_size, limit_samples=args.limit_batch_samples)
+        TRAIN_SPLIT,
+        args.batch_size,
+        limit_samples=args.limit_batch_samples,
+        streaming=args.dataset_streaming
+    )
+    dev_dataloader = get_libritts_dataloader(
+        DEV_SPLIT,
+        args.batch_size,
+        limit_samples=args.limit_batch_samples,
+        streaming=args.dataset_streaming
+    )
 
     [
         wrapped_content_encoder,
         optimizer,
         dataloader,
+        dev_dataloader,
         criterion,
         scheduler
     ] = accelerator.prepare(
         wrapped_content_encoder,
         optimizer,
         dataloader,
+        dev_dataloader,
         criterion,
         scheduler
     )
@@ -208,30 +242,29 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
 
             # compute accuracy on main process
             if (global_step + 1) % args.accuracy_interval == 0:
-                if accelerator.is_main_process:
-                    accuracy = compute_content_encoder_accuracy(
-                        wrapped_content_encoder, hubert_model, dev=True)
-                    accelerator.log(
-                        {
-                            "accuracy/content_encoder": accuracy
-                        },
-                        step=global_step)
-                    print_time(f"accuracy: {accuracy:.2f}%")
+                accuracy = compute_content_encoder_accuracy(
+                    islice(dev_dataloader, 10),
+                    wrapped_content_encoder,
+                    hubert_model)
+                accuracies = accelerator.gather_for_metrics([accuracy])
+                accuracies = torch.tensor(accuracies)
+                gathered_accuracy = accuracies.mean().item()
+                accelerator.log(
+                    {
+                        "accuracy/content_encoder": gathered_accuracy
+                    },
+                    step=global_step)
+                print_time(f"accuracy: {accuracy:.2f}%")
             if accelerator.device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats()
 
             global_step += 1
-    return wrapped_content_encoder
 
 
 @torch.no_grad()
-def compute_content_encoder_accuracy(wrapped_content_encoder: nn.Module, hubert_model: nn.Module, dev=False):
+def compute_content_encoder_accuracy(dataloader, wrapped_content_encoder: nn.Module, hubert_model: nn.Module):
     correct = 0
     total = 0
-    if dev:
-        dataloader = islice(get_libritts_dataloader(DEV_SPLIT, 16), 100)
-    else:
-        dataloader = get_libritts_dataloader(TEST_SPLIT, 16)
     wrapped_content_encoder.to(accelerator.device).eval()
     for (batch, mask) in dataloader:
         batch = batch.to(accelerator.device)
@@ -242,7 +275,7 @@ def compute_content_encoder_accuracy(wrapped_content_encoder: nn.Module, hubert_
         _, predicted = torch.max(outputs_flat.data, 1)
         total += torch.sum(labels_flat != -1).item()
         correct += (predicted == labels_flat).sum().item()
-    wrapped_content_encoder.to(accelerator.device).train()
+    wrapped_content_encoder.train()
 
     return 100 * correct / total
 
@@ -267,22 +300,24 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     #####################
     # Create optimizers #
     #####################
-    optimizer_generator = get_optimizer(
-        args.optimizer,
+    optimizer_generator = torch.optim.AdamW(
         params=[param for param in generator.parameters()
                 if param.requires_grad],
         lr=args.lr,
         betas=args.betas,
         weight_decay=args.weight_decay)
-    optimizer_discriminator = get_optimizer(
-        args.optimizer,
+    optimizer_discriminator = torch.optim.AdamW(
         params=discriminator.parameters(),
         lr=args.lr,
         betas=args.betas,
         weight_decay=args.weight_decay)
 
     dataloader = get_libritts_dataloader(
-        TRAIN_SPLIT, args.batch_size, limit_samples=args.limit_batch_samples)
+        TRAIN_SPLIT,
+        args.batch_size,
+        limit_samples=args.limit_batch_samples,
+        streaming=args.dataset_streaming
+    )
 
     generator_loss_fn = GeneratorLoss()
     discriminator_loss_fn = DiscriminatorLoss()
@@ -411,24 +446,27 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
 
 def main(args):
     """Main function for training StreamVC model."""
-    print_time(
-        f"DEVICE={accelerator.device} " +
-        f"mixed_precision={accelerator.mixed_precision} " +
-        f"checkpoints={args.checkpoint_path}")
-    hps = {
-        "batch_size": args.batch_size,
-        "num_epochs": args.num_epochs,
-        "lr": args.lr,
-        "beta0": args.betas[0],
-        "beta1": args.betas[1],
-        "weight_decay": args.weight_decay,
-        "gradient_accumulation_steps": accelerator.gradient_accumulation_steps,
-        "optimizer": args.optimizer,
-        "scheduler_step": args.scheduler_step,
-        "scheduler_gamma": args.scheduler_gamma,
-        "encoder-dropout": args.encoder_dropout,
-    }
+    print_time(f"DEVICE={accelerator.device}")
+    hps = dict(vars(args))
+    hps["num processes"] = accelerator.num_processes
+    hps["mixed precision"] = accelerator.mixed_precision
+    hps["gradient accumulation steps"] = accelerator.gradient_accumulation_steps
+
+    iter_keys = [key for key, value in hps.items()
+                 if isinstance(value, (list, tuple))]
+    for key in iter_keys:
+        for i, value in enumerate(hps[key]):
+            hps[f"{key}[{i}]"] = value
+        del hps[key]
+
+    bad_keys = [key for key, value in hps.items()
+                if not isinstance(value, (int, float, str, bool))]
+
+    for key in bad_keys:
+        del hps[key]
+
     print_time(f"{hps=}")
+
     accelerator.init_trackers(args.run_name, config=hps)
     streamvc = StreamVC(
         gradient_checkpointing=args.gradient_checkpointing)
@@ -436,11 +474,8 @@ def main(args):
         content_encoder = streamvc.content_encoder
         hubert_model = torch.hub.load("bshall/hubert:main", "hubert_discrete",
                                       trust_repo=True).to(torch.float32).eval()
-        wrapped_content_encoder = train_content_encoder(
+        train_content_encoder(
             content_encoder, hubert_model, args)
-        accuracy = compute_content_encoder_accuracy(
-            wrapped_content_encoder, hubert_model, args)
-        print_time(f"{accuracy=}")
     else:
         checkpoint = st.safe_open(args.content_encoder_checkpoint, "pt")
         encoder_state_dict = {
@@ -464,13 +499,16 @@ if __name__ == '__main__':
     parser.add_argument("--run-name", type=str, default="streamvc",
                         help="Name of the training run for identification purposes.")
     parser.add_argument("--module-to-train", type=str,
-                        choices=["content-encoder", "decoder-and-speaker", "all"],
+                        choices=["content-encoder",
+                                 "decoder-and-speaker", "all"],
                         default="all",
                         help="Specify which module to train: 'content-encoder', 'decoder-and-speaker', or 'all' "
                              "for both.")
     parser.add_argument("--content-encoder-checkpoint", type=str, default="",
                         help="Path to the content encoder checkpoint. Must be provided when --model-to-train is "
                              "decoder-and-speaker")
+    parser.add_argument("--no-dataset-streaming", action="store_false", dest="dataset_streaming",
+                        help="Download the dataset to disk instead of streaming it.")
 
     # General hyperparameters.
     parser.add_argument("--batch-size", type=int, default=24,
@@ -481,10 +519,7 @@ if __name__ == '__main__':
                         help="Limit the number of samples for audio signal in the batch.")
     parser.add_argument("--num-epochs", type=int, default=1,
                         help="Number of epochs for training.")
-    parser.add_argument("--optimizer", type=str, default="AdamW",
-                        choices=["Adam", "AdamW"],
-                        help="Optimizer to use for training. Choose between 'Adam' and 'AdamW'.")
-    parser.add_argument("--lr", type=float, default=0.001,
+    parser.add_argument("--lr", type=float, default=4e-3,
                         help="Learning rate for the optimizer.")
     parser.add_argument("--betas", type=float, nargs=2, default=(0.5, 0.9),
                         help="Beta parameters for the Adam or AdamW optimizer.")
@@ -494,10 +529,21 @@ if __name__ == '__main__':
                         dest='gradient_checkpointing', default=True,
                         help="Disable gradient checkpointing to increase compute speed at the cost of increased memory"
                              "usage.")
+    # LR schedualers
+    parser.add_argument("--scheduler", type=str, default="StepLR",
+                        choices=["StepLR", "LinearLR",
+                                 "ExponentialLR", "OneCycleLR"],
+                        help="Learning rate scheduler to use.")
     parser.add_argument("--scheduler-step", type=int, default=100,
-                        help="Step interval for learning rate scheduler updates.")
+                        help="Step interval for StepLR learning rate scheduler updates.")
     parser.add_argument("--scheduler-gamma", type=float, default=0.1,
-                        help="Gamma parameter for learning rate scheduler, controlling the decay rate.")
+                        help="Gamma parameter for StepLR, ExponentialLR learning rate schedulers, controlling the decay rate.")
+    parser.add_argument("--scheduler-linear-start", type=float, default=1.0,
+                        help="Initial learning rate mutiplier for LinearLR learning rate scheduler.")
+    parser.add_argument("--scheduler-linear-end", type=float, default=1.0,
+                        help="Final learning rate mutiplier for LinearLR learning rate scheduler.")
+    parser.add_argument("--scheduler-onecycle-max", type=float, default=1e-3,
+                        help="Max learning rate for OneCycleLR learning rate scheduler.")
 
     # Content encoder hyperparameters.
     parser.add_argument("--encoder-dropout", type=float, default=0.1,
@@ -523,7 +569,8 @@ if __name__ == '__main__':
     parser.add_argument("--log-labels-interval", type=int, default=None,
                         help="Interval (in steps) at which to log label information. Use None to disable.")
     parser.add_argument("--checkpoint-path", type=str,
-                        default=os.path.join(os.environ.get("HF_HOME", os.getcwd()), "checkpoints"),
+                        default=os.path.join(os.environ.get(
+                            "HF_HOME", os.getcwd()), "checkpoints"),
                         help="Path to save model checkpoints.")
 
     args = parser.parse_args()

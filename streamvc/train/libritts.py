@@ -9,7 +9,7 @@ DATASET_PATH = "blabble-io/libritts"
 SAMPLE_RATE = 16000
 
 
-def get_libritts_dataloader(split,  batch_size, num_workers=0, limit_samples=None) -> DataLoader:
+def get_libritts_dataloader(split,  batch_size, num_workers=0, limit_samples=None, streaming=True) -> DataLoader:
     """
     Get a dataloader for the LibriTTS dataset.
     :param split: The split of the dataset to load.
@@ -17,9 +17,12 @@ def get_libritts_dataloader(split,  batch_size, num_workers=0, limit_samples=Non
     :param num_workers: The number of workers to use for data loading.
     :param limit_samples: The number of samples in a batch (length of audio)
         with padding.
+    :param streaming: Whether to stream the dataset.
+    :param select: A function to select the rows to load.
     :return: A pytorch dataloader for the LibriTTS dataset.
     """
-    dataset = load_dataset(DATASET_PATH, "all", split=split, streaming=True)
+    dataset = load_dataset(DATASET_PATH, "all",
+                           split=split, streaming=streaming)
     dataset = dataset.select_columns('audio')
     dataset = dataset.cast_column('audio', Audio(sampling_rate=SAMPLE_RATE))
     dataset = dataset.with_format('torch')
