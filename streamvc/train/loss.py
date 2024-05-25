@@ -11,7 +11,7 @@ def masked_mean_from_ratios(tensor: torch.Tensor, mask_ratio: torch.Tensor):
     assert mask_ratio.shape[0] == tensor.shape[0]
 
     _, _, samples = tensor.shape
-    original_lengths = torch.floor(mask_ratio * samples).to(torch.int16)
+    original_lengths = torch.floor(mask_ratio * samples).to(torch.int32)
     num_original_samples = original_lengths.sum()
     mask = (torch.arange(samples, device=tensor.device)
             < original_lengths.unsqueeze(1)).unsqueeze(1)
@@ -67,7 +67,6 @@ class ReconstructionLoss(nn.Module):
         self.sample_rate = sample_rate
         self.mel_bins = mel_bins
         self.gradient_checkpointing = gradient_checkpointing
-        # TODO check which epsilon value we should use.
         self.epsilon = 1e-6
 
     def _calculate_for_scale(self):

@@ -5,6 +5,7 @@ from itertools import islice
 
 import einops
 import safetensors as st
+import safetensors.torch
 import torch
 import torch.nn as nn
 from accelerate import Accelerator, DataLoaderConfiguration
@@ -114,7 +115,7 @@ def get_lr_Scheduler(optimizer, args):
         return torch.optim.lr_scheduler.StepLR(
             optimizer,
             step_size=args.scheduler_step,
-            gamma=args.scheduler_step_gamma
+            gamma=args.scheduler_gamma
         )
     elif args.scheduler == "LinearLR":
         return torch.optim.lr_scheduler.LinearLR(
@@ -133,7 +134,10 @@ def get_lr_Scheduler(optimizer, args):
             optimizer,
             max_lr=args.scheduler_onecycle_max,
             steps_per_epoch=args.limit_num_batches,
-            epochs=args.num_epochs
+            epochs=args.num_epochs,
+            pct_start=args.scheduler_onecycle_pct_start,
+            div_factor=args.scheduler_onecycle_div_factor,
+            final_div_factor=args.scheduler_onecycle_final_div_factor
         )
     else:
         raise ValueError(f"Unknown scheduler: {args.scheduler}")
@@ -240,7 +244,6 @@ def train_content_encoder(content_encoder: nn.Module, hubert_model: nn.Module, a
                         f"{args.run_name}_content_encoder_{epoch}_{step}"
                     ))
 
-            # compute accuracy on main process
             if (global_step + 1) % args.accuracy_interval == 0:
                 accuracy = compute_content_encoder_accuracy(
                     islice(dev_dataloader, 10),
@@ -312,6 +315,9 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
         betas=args.betas,
         weight_decay=args.weight_decay)
 
+    scheduler_generator = get_lr_Scheduler(optimizer_generator, args)
+    scheduler_discriminator = get_lr_Scheduler(optimizer_discriminator, args)
+
     dataloader = get_libritts_dataloader(
         TRAIN_SPLIT,
         args.batch_size,
@@ -330,6 +336,8 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
         discriminator,
         optimizer_generator,
         optimizer_discriminator,
+        scheduler_generator,
+        scheduler_discriminator,
         dataloader,
         generator_loss_fn,
         discriminator_loss_fn,
@@ -340,6 +348,8 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
         discriminator,
         optimizer_generator,
         optimizer_discriminator,
+        scheduler_generator,
+        scheduler_discriminator,
         dataloader,
         generator_loss_fn,
         discriminator_loss_fn,
@@ -396,8 +406,14 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                     args.lambda_feature * feature_loss +
                     args.lambda_reconstruction * reconstruction_loss)
                 accelerator.backward(losses)
+
+                if args.log_gradient_interval and (global_step + 1) % args.log_gradient_interval == 0:
+                    log_gradients(generator, global_step)
+
                 optimizer_discriminator.step()
                 optimizer_generator.step()
+                scheduler_generator.step(global_step)
+                scheduler_discriminator.step(global_step)
 
             ######################
             # Update tensorboard #
@@ -415,6 +431,8 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
                     "loss/adversarial": adversarial_loss.item(),
                     "loss/feature_matching": feature_loss.item(),
                     "loss/reconstruction": reconstruction_loss.item(),
+                    "lr/generator": scheduler_generator.get_last_lr()[0],
+                    "lr/discriminator": scheduler_discriminator.get_last_lr()[0],
                     "allocated_memory": torch.cuda.max_memory_allocated()
                     if accelerator.device.type == "cuda"
                     else 0
@@ -477,10 +495,11 @@ def main(args):
         train_content_encoder(
             content_encoder, hubert_model, args)
     else:
-        checkpoint = st.safe_open(args.content_encoder_checkpoint, "pt")
+        wrapped_encoder_state_dict = st.torch.load_file(
+            args.content_encoder_checkpoint)
         encoder_state_dict = {
-            key[len("encoder."):]: checkpoint.get_tensor(key)
-            for key in checkpoint.keys()
+            key[len("encoder."):]: value
+            for key, value in wrapped_encoder_state_dict.items()
             if key.startswith("encoder.")
         }
         streamvc.content_encoder.load_state_dict(encoder_state_dict)
@@ -544,6 +563,15 @@ if __name__ == '__main__':
                         help="Final learning rate mutiplier for LinearLR learning rate scheduler.")
     parser.add_argument("--scheduler-onecycle-max", type=float, default=1e-3,
                         help="Max learning rate for OneCycleLR learning rate scheduler.")
+    parser.add_argument("--scheduler-onecycle-pct-start", type=float, default=0.3,
+                        help="The percentage of the cycle spent increasing the learning rate "
+                        + "for OneCycleLR learning rate scheduler.")
+    parser.add_argument("--scheduler-onecycle-div-factor", type=float, default=25,
+                        help="Determines the initial learning rate via initial_lr = max_lr/div_factor "
+                        + "for OneCycleLR learning rate scheduler.")
+    parser.add_argument("--scheduler-onecycle-final-div-factor", type=float, default=1e4,
+                        help="Determines the minimum learning rate via min_lr = initial_lr/final_div_factor "
+                        + "for OneCycleLR learning rate scheduler.")
 
     # Content encoder hyperparameters.
     parser.add_argument("--encoder-dropout", type=float, default=0.1,
