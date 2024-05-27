@@ -66,8 +66,7 @@ pip install -r requirements-inference.txt
 
 To launch the script, run:
 ```bash
-python inference.py [INFERENCE-OPTIONS] -s <source_speech> -t <target_speech>
--o <output_file>
+python inference.py -c <model_checkpoint> -s <source_speech> -t <target_speech> -o <output_file>
 ```
 To see the available inference options, run: 
 

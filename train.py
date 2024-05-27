@@ -110,7 +110,7 @@ def log_labels(outputs_flat, labels_flat, step):
         "labels/hubert", labels_flat, global_step=step)
 
 
-def get_lr_Scheduler(optimizer, args):
+def get_lr_Scheduler(optimizer, args, discriminator=False):
     if args.scheduler == "StepLR":
         return torch.optim.lr_scheduler.StepLR(
             optimizer,
@@ -130,9 +130,12 @@ def get_lr_Scheduler(optimizer, args):
             gamma=args.scheduler_gamma
         )
     elif args.scheduler == "OneCycleLR":
+        max_lr = args.scheduler_onecycle_max
+        if discriminator and args.lr_discriminator_multiplier is not None:
+            max_lr = args.lr_discriminator_multiplier * max_lr
         return torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=args.scheduler_onecycle_max,
+            max_lr=max_lr,
             steps_per_epoch=args.limit_num_batches,
             epochs=args.num_epochs,
             pct_start=args.scheduler_onecycle_pct_start,
@@ -309,14 +312,19 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
         lr=args.lr,
         betas=args.betas,
         weight_decay=args.weight_decay)
+
+    lr_discriminator = args.lr
+    if args.lr_discriminator_multiplier is not None:
+        lr_discriminator = args.lr_discriminator_multiplier * lr_discriminator
     optimizer_discriminator = torch.optim.AdamW(
         params=discriminator.parameters(),
-        lr=args.lr,
+        lr=lr_discriminator,
         betas=args.betas,
         weight_decay=args.weight_decay)
 
     scheduler_generator = get_lr_Scheduler(optimizer_generator, args)
-    scheduler_discriminator = get_lr_Scheduler(optimizer_discriminator, args)
+    scheduler_discriminator = get_lr_Scheduler(
+        optimizer_discriminator, args, discriminator=True)
 
     dataloader = get_libritts_dataloader(
         TRAIN_SPLIT,
@@ -362,58 +370,66 @@ def train_streamvc(streamvc_model: StreamVC, args: argparse.Namespace) -> None:
     for epoch in range(0, args.num_epochs):
         print_time(f"epoch num: {epoch}")
         for step, (batch, mask) in enumerate(islice(dataloader, args.limit_num_batches)):
-            with accelerator.accumulate(generator, discriminator):
-                x_pred_t = generator(batch, batch)
-                # Remove the first 2 frames from the generated audio
-                # because we match a output frame t with input frame t-2.
-                x_pred_t = x_pred_t[..., SAMPLES_PER_FRAME * 2:]
-                batch = batch[..., :x_pred_t.shape[-1]]
+            x_pred_t = generator(batch, batch)
+            # Remove the first 2 frames from the generated audio
+            # because we match a output frame t with input frame t-2.
+            x_pred_t = x_pred_t[..., SAMPLES_PER_FRAME * 2:]
+            batch = batch[..., :x_pred_t.shape[-1]]
 
-                mask_ratio = mask.sum(dim=-1) / mask.shape[-1]
+            mask_ratio = mask.sum(dim=-1) / mask.shape[-1]
 
-                #######################
-                # Train Discriminator #
-                #######################
+            #######################
+            # Train Discriminator #
+            #######################
 
-                discriminator_fake_detached = discriminator(x_pred_t.detach())
-                discriminator_real = discriminator(batch)
+            discriminator.zero_grad()
 
-                discriminator_loss = discriminator_loss_fn(
-                    discriminator_real, discriminator_fake_detached, mask_ratio)
+            discriminator_fake_detached = discriminator(x_pred_t.detach())
+            discriminator_real = discriminator(batch)
 
-                ###################
-                # Train Generator #
-                ###################
-                discriminator_fake = discriminator(x_pred_t)
+            discriminator_loss = discriminator_loss_fn(
+                discriminator_real, discriminator_fake_detached, mask_ratio)
 
-                # Compute adversarial loss.
-                adversarial_loss = generator_loss_fn(
-                    discriminator_fake, mask_ratio)
+            accelerator.backward(discriminator_loss)
 
-                # Compute feature loss.
-                feature_loss = feature_loss_fn(
-                    discriminator_real, discriminator_fake, mask_ratio)
+            if args.log_gradient_interval and (global_step + 1) % args.log_gradient_interval == 0:
+                log_gradients(discriminator, global_step)
 
-                # Compute reconstruction loss.
-                reconstruction_loss = reconstruction_loss_fn(
-                    batch, x_pred_t, mask_ratio)
+            optimizer_discriminator.step()
+            scheduler_discriminator.step(global_step)
 
-                generator.zero_grad()
-                discriminator.zero_grad()
-                losses = (
-                    discriminator_loss +
-                    args.lambda_adversarial * adversarial_loss +
-                    args.lambda_feature * feature_loss +
-                    args.lambda_reconstruction * reconstruction_loss)
-                accelerator.backward(losses)
+            ###################
+            # Train Generator #
+            ###################
 
-                if args.log_gradient_interval and (global_step + 1) % args.log_gradient_interval == 0:
-                    log_gradients(generator, global_step)
+            generator.zero_grad()
 
-                optimizer_discriminator.step()
-                optimizer_generator.step()
-                scheduler_generator.step(global_step)
-                scheduler_discriminator.step(global_step)
+            discriminator_fake = discriminator(x_pred_t)
+
+            # Compute adversarial loss.
+            adversarial_loss = generator_loss_fn(
+                discriminator_fake, mask_ratio)
+
+            # Compute feature loss.
+            feature_loss = feature_loss_fn(
+                discriminator_real, discriminator_fake, mask_ratio)
+
+            # Compute reconstruction loss.
+            reconstruction_loss = reconstruction_loss_fn(
+                batch, x_pred_t, mask_ratio)
+
+            losses = (
+                args.lambda_adversarial * adversarial_loss +
+                args.lambda_feature * feature_loss +
+                args.lambda_reconstruction * reconstruction_loss)
+
+            accelerator.backward(losses)
+
+            if args.log_gradient_interval and (global_step + 1) % args.log_gradient_interval == 0:
+                log_gradients(generator, global_step)
+
+            optimizer_generator.step()
+            scheduler_generator.step(global_step)
 
             ######################
             # Update tensorboard #
@@ -469,6 +485,10 @@ def main(args):
     hps["num processes"] = accelerator.num_processes
     hps["mixed precision"] = accelerator.mixed_precision
     hps["gradient accumulation steps"] = accelerator.gradient_accumulation_steps
+
+    if accelerator.gradient_accumulation_steps > 1 and args.module_to_train != "content-encoder":
+        raise ValueError(
+            "Gradient accumulation is not supported for the decoder training.")
 
     iter_keys = [key for key, value in hps.items()
                  if isinstance(value, (list, tuple))]
@@ -584,7 +604,8 @@ if __name__ == '__main__':
                         help="Weight of the reconstruction loss.")
     parser.add_argument("--lambda-adversarial", type=float, default=1,
                         help="Weight of the adversarial loss.")
-
+    parser.add_argument("--lr-discriminator-multiplier", type=float, default=None,
+                        help="Learning ratemultiplier for the discriminator, if None than lr is same as generator.")
     # Logs and outputs.
     parser.add_argument("--model-checkpoint-interval", type=int, default=100,
                         help="Interval (in steps) at which to save model checkpoints.")
