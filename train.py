@@ -142,6 +142,13 @@ def get_lr_Scheduler(optimizer, args, discriminator=False):
             div_factor=args.scheduler_onecycle_div_factor,
             final_div_factor=args.scheduler_onecycle_final_div_factor
         )
+    elif args.scheduler == "CosineAnnealingWarmRestarts":
+        return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=args.scheduler_step,
+            T_mult=1,
+            eta_min=args.scheduler_cosine_eta_min
+        )
     else:
         raise ValueError(f"Unknown scheduler: {args.scheduler}")
 
@@ -571,10 +578,11 @@ if __name__ == '__main__':
     # LR schedualers
     parser.add_argument("--scheduler", type=str, default="StepLR",
                         choices=["StepLR", "LinearLR",
-                                 "ExponentialLR", "OneCycleLR"],
+                                 "ExponentialLR", "OneCycleLR",
+                                 "CosineAnnealingWarmRestarts"],
                         help="Learning rate scheduler to use.")
     parser.add_argument("--scheduler-step", type=int, default=100,
-                        help="Step interval for StepLR learning rate scheduler updates.")
+                        help="Step interval for StepLR learning rate scheduler updates. Or T_0 for CosineAnnealingWarmRestarts.")
     parser.add_argument("--scheduler-gamma", type=float, default=0.1,
                         help="Gamma parameter for StepLR, ExponentialLR learning rate schedulers, controlling the decay rate.")
     parser.add_argument("--scheduler-linear-start", type=float, default=1.0,
@@ -592,6 +600,8 @@ if __name__ == '__main__':
     parser.add_argument("--scheduler-onecycle-final-div-factor", type=float, default=1e4,
                         help="Determines the minimum learning rate via min_lr = initial_lr/final_div_factor "
                         + "for OneCycleLR learning rate scheduler.")
+    parser.add_argument("--scheduler-cosine-eta-min", type=float, default=0,
+                        help="Minimum learning rate for CosineAnnealingWarmRestarts learning rate scheduler.")
 
     # Content encoder hyperparameters.
     parser.add_argument("--encoder-dropout", type=float, default=0.1,
@@ -605,7 +615,7 @@ if __name__ == '__main__':
     parser.add_argument("--lambda-adversarial", type=float, default=1,
                         help="Weight of the adversarial loss.")
     parser.add_argument("--lr-discriminator-multiplier", type=float, default=None,
-                        help="Learning ratemultiplier for the discriminator, if None than lr is same as generator.")
+                        help="Learning rate multiplier for the discriminator, if None than lr is same as generator.")
     # Logs and outputs.
     parser.add_argument("--model-checkpoint-interval", type=int, default=100,
                         help="Interval (in steps) at which to save model checkpoints.")
