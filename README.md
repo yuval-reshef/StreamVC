@@ -1,8 +1,7 @@
 # StreamVC
-An unofficial pytorch implementation of [STREAMVC: REAL-TIME LOW-LATENCY VOICE CONVERSION](https://arxiv.org/pdf/2401.03078.pdf).
-It was created for learning purposes, it isn't feature complete, and it doesn't replicate the results from the paper.
+An unofficial pytorch implementation of [STREAMVC: REAL-TIME LOW-LATENCY VOICE CONVERSION](https://arxiv.org/pdf/2401.03078.pdf) created for learning purposes.
 
-The streaming infernce isn't fully implemented.
+The streaming infernce isn't fully implemented at the moment.
 
 ```mermaid
 flowchart LR 
