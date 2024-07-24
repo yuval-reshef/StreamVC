@@ -57,7 +57,7 @@ class FeatureLoss(nn.Module):
             for j in range(len(fake[i]) - 1):
                 loss += wt * \
                     masked_mean_from_ratios(
-                        torch.abs(fake[i][j]-real[i][j]).detach(), mask_ratio)
+                        torch.abs(fake[i][j]-real[i][j].detach()), mask_ratio)
         return loss
 
 
