@@ -27,20 +27,43 @@ class DiscriminatorLoss(nn.Module):
         mask_ratio: torch.Tensor,
     ):
         loss = torch.tensor(0.0, device=real[0][0].device, dtype=real[0][0].dtype)
+        
+        # L_D = E_x [1/K ∑_k 1/T_k ∑_t max(0, 1 - D_{k,t}(x))] + 
+        #       E_x [1/K ∑_k 1/T_k ∑_t max(0, 1 + D_{k,t}(G(x)))]
+        
+        K = len(real)  # The number of discriminators
 
+        # Real data loss: max(0, 1 - D(x))
+        real_loss_total = torch.tensor(0.0, device=real[0][0].device, dtype=real[0][0].dtype)
         for scale in real:
-            loss += masked_mean_from_ratios(F.relu(1 - scale[-1]), mask_ratio)
-        for scale in fake:
-            loss += masked_mean_from_ratios(F.relu(1 + scale[-1]), mask_ratio)
+            real_loss_total += masked_mean_from_ratios(F.relu(1 - scale[-1]), mask_ratio)
 
+        # Fake data loss: max(0, 1 + D(G(x)))
+        fake_loss_total = torch.tensor(0.0, device=fake[0][0].device, dtype=fake[0][0].dtype)
+        for scale in fake:
+            fake_loss_total += masked_mean_from_ratios(F.relu(1 + scale[-1]), mask_ratio)
+        
+        loss = (real_loss_total + fake_loss_total) / K
         return loss
 
 
 class GeneratorLoss(nn.Module):
     def forward(self, fake: list[list[torch.Tensor]], mask_ratio: torch.Tensor):
         loss = torch.tensor(0.0, device=fake[0][0].device, dtype=fake[0][0].dtype)
+        
+        # L_G^adv = E_x [1/K ∑_{k,t} 1/T_k max(0, 1 - D_{k,t}(G(x)))]
+        K = len(fake)  # The number of discriminators
+        total_loss = torch.tensor(0.0, device=fake[0][0].device, dtype=fake[0][0].dtype)
+        
+        fake_losses = []
         for scale in fake:
-            loss += -masked_mean_from_ratios(scale[-1], mask_ratio)
+            fake_loss = masked_mean_from_ratios(F.relu(1 - scale[-1]), mask_ratio)
+            fake_losses.append(fake_loss.item())
+            total_loss += fake_loss
+
+        # Normalize by K
+        loss = total_loss / K
+            
         return loss
 
 
@@ -58,14 +81,14 @@ class FeatureLoss(nn.Module):
         mask_ratio: torch.Tensor,
     ):
         loss = torch.tensor(0.0, device=real[0][0].device, dtype=real[0][0].dtype)
-        feature_weights = 4.0 / (self.n_layers + 1)
-        discriminator_weights = 1.0 / self.n_blocks
-        wt = discriminator_weights * feature_weights
+        
         for i in range(self.n_blocks):
             for j in range(len(fake[i]) - 1):
-                loss += wt * masked_mean_from_ratios(
-                    torch.abs(fake[i][j] - real[i][j].detach()), mask_ratio
-                )
+                loss += masked_mean_from_ratios(
+                torch.abs(fake[i][j] - real[i][j].detach()), mask_ratio
+            )
+        num_layers = len(fake[0]) - 1
+        loss = loss / (self.n_blocks * num_layers)
         return loss
 
 
@@ -91,7 +114,6 @@ class ReconstructionLoss(nn.Module):
                 inputs[3],
             )
             s = 2**s_exp
-            # Should satisfy n_fft >= win_length && ((n_fft // 2) + 1) >= n_mels.
             n_fft = 2**11
             window_size = s
             hop_length = int(s / 4)
@@ -104,19 +126,13 @@ class ReconstructionLoss(nn.Module):
             ).to(original.device)
             orig_audio_spec = mel_spectrogram(original)
             generated_audio_spec = mel_spectrogram(generated)
+            
+            l1_loss = torch.abs(orig_audio_spec - generated_audio_spec).sum()
+            log_diff = torch.log(orig_audio_spec + self.epsilon) - torch.log(generated_audio_spec + self.epsilon)
+
+            l2_log_loss = torch.sqrt(torch.sum(log_diff**2, dim=1)).sum()
 
             alpha_s = torch.sqrt(torch.tensor(s) / 2).to(original.device)
-            l1_loss = torch.abs(orig_audio_spec - generated_audio_spec)
-            l1_loss = masked_mean_from_ratios(l1_loss, mask_ratio)
-            l2_log_loss = torch.pow(
-                torch.log(orig_audio_spec + self.epsilon)
-                - torch.log(generated_audio_spec + self.epsilon),
-                exponent=2,
-            )
-            l2_log_loss = l2_log_loss.mean(dim=1, keepdim=True)
-            l2_log_loss = torch.sqrt(l2_log_loss)
-            l2_log_loss = masked_mean_from_ratios(l2_log_loss, mask_ratio)
-
             return l1_loss + alpha_s * l2_log_loss
 
         return custom_run
@@ -140,4 +156,4 @@ class ReconstructionLoss(nn.Module):
                 loss += self._calculate_for_scale()(
                     original, generated, s_exp, mask_ratio
                 )
-        return loss / 6
+        return loss
